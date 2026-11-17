@@ -1,0 +1,19 @@
+{
+  "name": "claude-provider-launchers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Launch Claude Code with ChatGPT plan, DeepSeek or an Anthropic-compatible endpoint.",
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "scripts": {
+    "test": "node --test test-gpt-bridge.mjs test-gpt-network.mjs test-gpt-integration.mjs",
+    "test:python": "python -m unittest discover -p test_*.py",
+    "smoke:gpt": "node smoke-gpt-live.mjs",
+    "smoke:resume": "node smoke-gpt-resume.mjs",
+    "smoke:partial": "node smoke-gpt-partial-history.mjs"
+  },
+  "dependencies": {
+    "undici": "7.30.2"
+  }
+}

@@ -1,0 +1,316 @@
+# Claude provider launchers
+
+Три команды для запуска установленного Claude Code с другим провайдером:
+
+| Команда | Подключение | Что требуется от пользователя |
+| --- | --- | --- |
+| `gpt_claude` | Claude Code → локальный адаптер → OpenAI Responses API | Своя подписка ChatGPT с доступом к Sign in with ChatGPT / token sharing |
+| `ds_claude` | Claude Code → DeepSeek напрямую | Свой API-ключ DeepSeek |
+| `ai_claude` | Claude Code → ваш Anthropic-совместимый endpoint напрямую | URL сервера, API-ключ и ID модели |
+
+Лаунчеры сохраняют текущую рабочую папку, передают аргументы Claude Code и задают
+провайдера только дочернему процессу. `ds_claude` и `ai_claude` работают напрямую,
+без GPT-адаптера. Глобальные настройки Claude не переписываются.
+
+Это сторонняя интеграция. Совместимость с новыми версиями Claude Code и моделями
+нужно проверять; наличие подписки ChatGPT само по себе не гарантирует доступ
+к token sharing. Автоматического перехода на платный OpenAI API key нет.
+
+## Требования
+
+- Установленный нативный Claude Code: команда `claude` на macOS/Linux,
+  `claude.exe` на Windows.
+- Node.js **20.18.1 или новее** и npm для `gpt_claude`.
+- Python **3.10 или новее** для `ds_claude`, `ai_claude` и установщика macOS/Linux.
+- Git для клонирования репозитория.
+
+```sh
+git clone https://github.com/lrchome/claude.git
+cd claude
+npm ci
+```
+
+Для использования только `ds_claude` и `ai_claude` установка Node.js-зависимостей
+не требуется. Их Windows-обёртки используют команду `python`, Unix-обёртки — `python3`.
+
+## Установка команд на Windows
+
+В PowerShell из папки репозитория:
+
+```powershell
+powershell -NoProfile -File .\install-windows.ps1
+```
+
+Установщик добавит каталог `bin` в пользовательский PATH и проверит версии
+Claude Code. Сначала выполните настройку провайдеров ниже, затем используйте
+соответствующий лаунчер. Перезапустите терминал после установки.
+
+Если локальная политика PowerShell запрещает запуск скриптов, команды доступны
+и без установщика по полному пути:
+
+```powershell
+.\bin\gpt_claude.cmd --version
+.\bin\ds_claude.cmd --version
+.\bin\ai_claude.cmd --version
+```
+
+## Установка команд на macOS / Linux
+
+```sh
+python3 install-unix.py
+export PATH="$HOME/.local/bin:$PATH"
+gpt_claude --version
+```
+
+Для постоянного PATH добавьте `export PATH="$HOME/.local/bin:$PATH"` в файл
+конфигурации своего shell, например `~/.zshrc` для стандартного zsh на Mac.
+Установщик создаёт обёртки в `~/.local/bin`, заменяя прежние обёртки с такими
+именами. Если переместили репозиторий, запустите установщик заново.
+Подробная инструкция: [INSTALL-MAC.md](INSTALL-MAC.md).
+
+## Настройка gpt_claude
+
+Вставлять API-ключ OpenAI не требуется. Войдите **в свой аккаунт** через браузер:
+
+```sh
+gpt_claude --login
+gpt_claude --launcher-info
+gpt_claude --models
+```
+
+Если браузер не открылся, используйте ссылку из терминала. Вход отдельный:
+авторизация Codex и Claude автоматически не переносится. Лаунчер создаёт свои
+`auth.json` и `host.json` в `~/.config/gpt_claude` вне репозитория
+(`%USERPROFILE%\.config\gpt_claude` на Windows). Не копируйте эти файлы другим людям.
+
+```sh
+cd /path/to/your/project
+gpt_claude
+gpt_claude --resume
+```
+
+По умолчанию выбирается `gpt-6.1-sol`, если модель есть в каталоге аккаунта;
+иначе первая доступная. Выбирайте ID из вывода `--models`.
+
+PowerShell:
+
+```powershell
+$env:GPT_CLAUDE_MODEL = 'gpt-6.1-sol'
+$env:GPT_CLAUDE_EFFORT = 'medium'
+gpt_claude
+```
+
+macOS/Linux:
+
+```sh
+GPT_CLAUDE_MODEL=gpt-6.1-sol GPT_CLAUDE_EFFORT=medium gpt_claude
+```
+
+Допустимые уровни reasoning зависят от модели. Значение `default` отключает
+явную передачу уровня в API. Выбор через `GPT_CLAUDE_EFFORT` относится к адаптеру;
+нативная команда `/effort` Claude не заменяет эту переменную.
+
+## Настройка ds_claude и ai_claude
+
+### 1. Скопируйте пример в личную конфигурацию
+
+По умолчанию читается `~/.config/opencode/opencode.json`. Если вы уже используете
+OpenCode, сохраните существующие настройки и добавьте нужный provider в них.
+Либо используйте отдельный файл, как в примере ниже.
+
+PowerShell из папки репозитория:
+
+```powershell
+$providerDirectory = Join-Path $HOME '.config\claude-launchers'
+New-Item -ItemType Directory -Path $providerDirectory -Force
+$env:OPENCODE_CONFIG = Join-Path $providerDirectory 'providers.json'
+if (-not (Test-Path -LiteralPath $env:OPENCODE_CONFIG)) {
+    Copy-Item .\examples\opencode.json $env:OPENCODE_CONFIG
+}
+notepad $env:OPENCODE_CONFIG
+```
+
+macOS/Linux:
+
+```sh
+mkdir -p "$HOME/.config/claude-launchers"
+export OPENCODE_CONFIG="$HOME/.config/claude-launchers/providers.json"
+if [ ! -f "$OPENCODE_CONFIG" ]; then
+  cp examples/opencode.json "$OPENCODE_CONFIG"
+fi
+chmod 600 "$OPENCODE_CONFIG"
+```
+
+Откройте скопированный файл в своём редакторе. Пример находится вне репозитория,
+поэтому введённые в него значения не попадут в коммит этого проекта.
+`OPENCODE_CONFIG` необходимо задавать в каждом новом терминале или сохранить
+её в настройках окружения своей ОС/shell.
+
+### 2. Укажите свои значения
+
+| Где | Что вставить |
+| --- | --- |
+| Переменная `DEEPSEEK_API_KEY` | Ваш API-ключ DeepSeek; для запуска только GPT или AI не нужен |
+| Переменная `AI_CLAUDE_BASE_URL` | URL вашего Anthropic-совместимого сервера, например `https://provider.example` |
+| Переменная `AI_CLAUDE_API_KEY` | Ваш ключ этого сервера |
+| `provider.ai-lrcs.models.local.id` в скопированном JSON | Замените `YOUR_MODEL_ID` на настоящий ID модели сервера |
+| `limit.context` / `limit.output` | Реальные лимиты выбранной модели в токенах |
+
+PowerShell (значения только для текущего терминала):
+
+```powershell
+$env:DEEPSEEK_API_KEY = Read-Host 'Ваш API-ключ DeepSeek'
+$env:AI_CLAUDE_BASE_URL = Read-Host 'URL вашего Anthropic-совместимого сервера'
+$env:AI_CLAUDE_API_KEY = Read-Host 'Ваш API-ключ AI-сервера'
+```
+
+macOS/Linux:
+
+```sh
+export DEEPSEEK_API_KEY='YOUR_DEEPSEEK_KEY'
+export AI_CLAUDE_BASE_URL='https://provider.example'
+export AI_CLAUDE_API_KEY='YOUR_AI_KEY'
+```
+
+Для выбранного лаунчера нужны только его настройки. Слова `YOUR_…` и домен
+`provider.example` — заглушки, их необходимо заменить. Лаунчер не загружает
+`.env` автоматически. Значения ключей не передаются аргументами командной строки.
+
+В примере JSON ключи задаются ссылками `{env:NAME}`. Поддерживается также
+`{file:/absolute/path/to/key}`: сохраните ключ в личном файле вне репозитория
+и укажите ссылку в поле `apiKey`. Относительные пути считаются от каталога
+конфигурации. JSON и файлы ключей читаются как UTF-8, включая BOM.
+
+`ds_claude` использует provider `deepseek`, модель с ключом `deepseek-v4-pro`
+и endpoint `https://api.deepseek.com/anthropic`. Проверьте доступность этого
+ID в своём аккаунте; при необходимости измените поле `id` в личном JSON.
+
+`ai_claude` использует provider с историческим именем `ai-lrcs` и модель
+с ключом `local`. Значения `baseURL` и `id` настраиваются пользователем;
+название provider в конфигурации оставьте таким, как в примере.
+Сервер должен поддерживать Anthropic Messages API, а не только OpenAI Chat Completions.
+Конечный `/v1` в `baseURL` удаляется, поскольку Claude добавляет `/v1/messages` сам.
+
+Если provider `ai-lrcs` отсутствует в OpenCode-конфигурации, `ai_claude` читает
+его из `~/.pi/agent/models.json` (или `PI_MODELS_CONFIG`). Формат показан
+в [examples/pi-models.json](examples/pi-models.json). Файл OpenCode при этом
+всё равно должен существовать и содержать корректный JSON, хотя бы `{}`.
+В pi-варианте ищется модель с `id: "local"`; для произвольного ID модели
+используйте основной OpenCode-формат с отдельным полем `id`.
+
+### 3. Проверьте и запустите
+
+```sh
+ds_claude --launcher-info
+ai_claude --launcher-info
+```
+
+Команды показывают выбранный endpoint и модель без API-ключа. Затем перейдите
+в папку рабочего проекта и запустите нужный лаунчер:
+
+```sh
+ds_claude
+ai_claude
+```
+
+## Сбои и длительные задачи GPT
+
+GPT-адаптер делает до трёх попыток при временных ошибках, обрыве или таймауте.
+По умолчанию отсутствие событий OpenAI в течение 120 секунд прерывает попытку.
+Это интервал без событий, а не общий лимит времени задачи.
+
+| Переменная | Значение по умолчанию | Назначение |
+| --- | --- | --- |
+| `GPT_CLAUDE_MODEL` | Из каталога аккаунта | Модель на весь запуск |
+| `GPT_CLAUDE_EFFORT` | `medium` | Уровень reasoning |
+| `GPT_CLAUDE_IDLE_TIMEOUT_MS` | `120000` | Таймаут отсутствия событий, миллисекунды |
+| `GPT_CLAUDE_DEBUG` | Выключено | `1` включает сообщения о завершённых запросах |
+
+Для длительных ответов можно установить пять минут без событий:
+
+```powershell
+$env:GPT_CLAUDE_IDLE_TIMEOUT_MS = '300000'
+$env:GPT_CLAUDE_DEBUG = '1'
+gpt_claude --resume
+```
+
+```sh
+GPT_CLAUDE_IDLE_TIMEOUT_MS=300000 GPT_CLAUDE_DEBUG=1 gpt_claude --resume
+```
+
+Перегрузка передаётся Claude как `529 overloaded_error` или SSE-ошибка этого типа
+в уже начатом потоке. Ограничение частоты запросов остаётся `rate_limit_error`.
+Повторы учитывают `Retry-After`; интервалы более 30 секунд передаются клиенту
+без раннего внутреннего повтора. В начатом SSE интервал остаётся в сообщении
+ошибки, поскольку HTTP-заголовки уже отправлены.
+
+Частичная история параллельных инструментов не восстанавливает вызовы без
+результатов из replay. Незавершённые действия отмечаются как имеющие неизвестный
+статус, результаты не выдумываются. Повторы GPT-запросов происходят до передачи
+вызовов инструментов Claude и сами не выполняют команды пользователя.
+
+Сбои и повторы печатаются всегда. Ошибки включают доступные ID запросов/ответов,
+тип, код, параметр и сообщение OpenAI. Запросы целиком не записываются, но сообщение
+сервера может содержать фрагмент некорректного значения. Проверяйте журнал
+перед публикацией. Не отправляйте `auth.json`, API-ключи или историю сессии целиком.
+
+После изменения кода или переменных окружения перезапустите лаунчер.
+Если задача остановилась окончательно, автоматического возобновления всей
+задачи нет: восстановите сессию через `--resume` и проверьте состояние инструментов.
+Обработка сбоев у прямых `ds_claude` и `ai_claude` остаётся на стороне Claude Code
+и провайдера; параметры `GPT_CLAUDE_*` к ним не относятся.
+
+## Сеть
+
+На Windows GPT-адаптер учитывает системный прокси текущего пользователя,
+включая PAC/WPAD и исключения. Явные `HTTP_PROXY`/`HTTPS_PROXY` имеют приоритет,
+при этом учитывается `NO_PROXY`. В текущей реализации системный выбор прокси
+адаптера реализован только для Windows; на macOS/Linux используется обычный
+Node.js fetch. Локальный обмен с адаптером должен идти напрямую.
+
+## Тесты
+
+Офлайн-проверки, без запросов к провайдерам:
+
+```sh
+npm test
+python -m unittest discover -p 'test_*.py'
+```
+
+На Mac используйте `python3` вместо `python`. Сквозные проверки GPT расходуют
+токены вашей подписки:
+
+```sh
+npm run smoke:gpt
+npm run smoke:resume
+npm run smoke:partial
+```
+
+Первые две читают временные тестовые файлы через настоящий Claude Code.
+Проверка `smoke:resume` сохраняет отдельную тестовую сессию. `smoke:partial`
+проверяет протокол с искусственным результатом Read и не выполняет инструменты.
+macOS-установщик проверяется автоматически на генерацию обёрток, но полный
+сквозной запуск на Mac ещё не подтверждён. Полноценный ночной прогон не является
+частью тестов.
+
+## Ограничения
+
+- Текст GPT отображается после завершения хода модели, без постепенного вывода.
+- Подсчёт токенов приблизительный; денежная оценка Claude не отражает расход подписки.
+- Tool search GPT-адаптером отключён; неподдерживаемые параметры генерации Claude
+  не передаются в OpenAI. Не все функции Claude Code совместимы с другим провайдером.
+- Автоматический классификатор разрешений Claude остаётся активным на клиенте;
+  это не серверный классификатор Anthropic и не гарантия одинаковых решений.
+- В исходниках также сохранён вспомогательный `local_adapter.py` для нормализации
+  system-блоков локального сервера. Три основные команды его не используют.
+
+## Документация провайдеров
+
+- [Sign in with ChatGPT: модели и inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+- [DeepSeek: Claude Code](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)
+- [Claude: настройка моделей](https://code.claude.com/docs/en/model-config)
+- [Claude: ошибки API](https://platform.claude.com/docs/en/api/errors)
+
+Файлы авторизации и пользовательские настройки в репозиторий не входят.
+Каждый пользователь подключает свои аккаунты и вставляет свои значения
+в локальную конфигурацию или переменные окружения.

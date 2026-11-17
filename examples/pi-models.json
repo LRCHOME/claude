@@ -1,0 +1,11 @@
+{
+  "providers": {
+    "ai-lrcs": {
+      "baseUrl": "{env:AI_CLAUDE_BASE_URL}",
+      "apiKey": "{env:AI_CLAUDE_API_KEY}",
+      "models": [
+        { "id": "local", "contextWindow": 262144, "maxTokens": 32768 }
+      ]
+    }
+  }
+}

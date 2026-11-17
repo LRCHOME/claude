@@ -1,0 +1,27 @@
+{
+  "provider": {
+    "deepseek": {
+      "options": {
+        "apiKey": "{env:DEEPSEEK_API_KEY}"
+      },
+      "models": {
+        "deepseek-v4-pro": {
+          "id": "deepseek-v4-pro",
+          "limit": { "context": 1000000, "output": 65536 }
+        }
+      }
+    },
+    "ai-lrcs": {
+      "options": {
+        "baseURL": "{env:AI_CLAUDE_BASE_URL}",
+        "apiKey": "{env:AI_CLAUDE_API_KEY}"
+      },
+      "models": {
+        "local": {
+          "id": "YOUR_MODEL_ID",
+          "limit": { "context": 262144, "output": 32768 }
+        }
+      }
+    }
+  }
+}
