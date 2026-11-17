@@ -360,3 +360,35 @@ test('a changed request is not blocked by another request stall budget',async t=
   assert.equal((await post({messages:[{role:'user',content:'different fixture request'}]})).status,200);
   assert.equal(calls,2);
 });
+
+test('long client cancellations cannot bypass the shared stall budget',async t=>{
+  let calls=0;let cancelled;
+  const cancellation=new Promise(resolve=>{cancelled=resolve;});
+  const {post}=await fixture(t,(req,res)=>{
+    calls++;res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.write('data: {"type":"response.created"}\n\n');
+  },{cancelStallAfter:10,stallLimit:1,diagnostics:event=>{if(event.event==='request_cancelled')cancelled();}});
+  const first=await post({stream:true});
+  await new Promise(resolve=>setTimeout(resolve,25));
+  await first.body.cancel();await cancellation;
+  const blocked=await post({stream:true});
+  assert.equal(blocked.status,504);
+  assert.equal(blocked.headers.get('x-should-retry'),'false');
+  assert.equal(calls,1);
+});
+
+test('a short user interruption leaves the same request retryable',async t=>{
+  let calls=0;let cancelled;
+  const cancellation=new Promise(resolve=>{cancelled=resolve;});
+  const {post}=await fixture(t,(req,res)=>{
+    calls++;res.writeHead(200,{'Content-Type':'text/event-stream'});
+    if(calls===1)res.write('data: {"type":"response.created"}\n\n');
+    else res.end(done());
+  },{stallLimit:1,diagnostics:event=>{if(event.event==='request_cancelled')cancelled();}});
+  const first=await post({stream:true});
+  await first.body.cancel();await cancellation;
+  const second=await post({stream:true});
+  assert.equal(second.status,200);
+  await second.text();
+  assert.equal(calls,2);
+});

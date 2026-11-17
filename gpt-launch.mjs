@@ -42,6 +42,10 @@ async function main(){
  for(const family of ['FABLE','OPUS','SONNET','HAIKU'])env['ANTHROPIC_DEFAULT_'+family+'_MODEL']=model;
  env.CLAUDE_CODE_SUBAGENT_MODEL=model;
  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1';
+ // The bridge owns retries. Do not multiply its budget by SDK-level retries.
+ env.CLAUDE_CODE_MAX_RETRIES=process.env.CLAUDE_CODE_MAX_RETRIES??'0';
+ // Let the bridge report its own deadline instead of a shorter native fetch timeout.
+ env.API_TIMEOUT_MS=process.env.API_TIMEOUT_MS||String(Number(process.env.GPT_CLAUDE_RESPONSE_TIMEOUT_MS||900000)+60000);
  env.ENABLE_TOOL_SEARCH='false';
  // This bridge does not implement Anthropic's server-side permission review.
  // Keep the native client-side classifier and its permission rules active.

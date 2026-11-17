@@ -19,7 +19,7 @@ try {
   const env={...process.env};
   for(const key of ['CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY','CLAUDE_CODE_OAUTH_TOKEN','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_CUSTOM_HEADERS'])delete env[key];
   Object.assign(env,{ANTHROPIC_BASE_URL:bridge.url,ANTHROPIC_API_KEY:bridge.token,ANTHROPIC_MODEL:model,
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost'});
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',CLAUDE_CODE_MAX_RETRIES:'0',NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost'});
   let stdout='',exit=0;
   try {
     const pending=execute(process.platform==='win32'?'claude.exe':'claude',[

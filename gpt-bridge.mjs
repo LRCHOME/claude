@@ -197,7 +197,15 @@ export async function startBridge(model,catalog,options={}) {
   const stallLimit=options.stallLimit??Number(process.env.GPT_CLAUDE_STALL_LIMIT||2);
   if(!Number.isSafeInteger(stallLimit)||stallLimit<1)throw new Error('Invalid GPT_CLAUDE_STALL_LIMIT');
   const stallCooldown=options.stallCooldown??600000;
+  const cancelStallAfter=options.cancelStallAfter??60000;
   const stalledRequests=new Map();
+  const markStalled=(fingerprint,trace,reason)=>{
+    const count=(stalledRequests.get(fingerprint)?.count||0)+1;
+    stalledRequests.set(fingerprint,{count,time:Date.now()});
+    if(stalledRequests.size>256)stalledRequests.delete(stalledRequests.keys().next().value);
+    if(count>=stallLimit)diagnose({event:'retry_guard_open',trace,stall_count:count,stall_limit:stallLimit,status:504,error_code:reason});
+    return count>=stallLimit;
+  };
   const stalledError=()=>Object.assign(apiError('Repeated upstream timeouts for the same request. Automatic retries stopped for 10 minutes; interrupt the current wait and resume manually after checking the connection or reducing the context.',504,'timeout_error'),{retryable:false,stopRetry:true,code:'repeated_stream_timeout'});
   const log=options.log||((value)=>console.error('gpt_claude: '+value));
   const diagnose=options.diagnostics||(()=>{});
@@ -213,7 +221,8 @@ export async function startBridge(model,catalog,options={}) {
       json(200,{data:catalog.map(m=>({id:m.slug,type:'model',display_name:m.display_name,created_at:'2026-01-01T00:00:00Z'})),has_more:false});return;
     }
     if(req.method!=='POST' || !['/v1/messages','/v1/messages/count_tokens'].includes(route)){json(404,{error:{type:'not_found_error',message:'Unknown endpoint'}});return;}
-    let ping,controller;let streaming=false;
+    let ping,controller;let streaming=false,attemptCounted=false;
+    let fingerprint,lastActivityAt=Date.now();
     const started=Date.now(),trace=crypto.randomUUID().slice(0,8);
     try {
       const chunks=[];let size=0;
@@ -226,7 +235,8 @@ export async function startBridge(model,catalog,options={}) {
         // Conservative estimate; this is not an exact OpenAI tokenizer count.
         json(200,{input_tokens:Buffer.byteLength(JSON.stringify(request))});return;
       }
-      const serialized=JSON.stringify(request),fingerprint=crypto.createHash('sha256').update(serialized).digest('hex');
+      const serialized=JSON.stringify(request);
+      fingerprint=crypto.createHash('sha256').update(serialized).digest('hex');
       for(const [key,value] of stalledRequests)if(Date.now()-value.time>=stallCooldown)stalledRequests.delete(key);
       if(stalledRequests.get(fingerprint)?.count>=stallLimit){
         diagnose({event:'request_retry_blocked',trace,status:504,stall_limit:stallLimit});
@@ -242,11 +252,21 @@ export async function startBridge(model,catalog,options={}) {
         ping=setInterval(()=>sendEvent(res,'ping',{}),10000);
       };
       res.on('close',()=>{
-        if(!res.writableEnded)diagnose({event:'request_cancelled',trace,elapsed_ms:Date.now()-started});
+        if(!res.writableEnded){
+          const elapsed=Date.now()-started;
+          diagnose({event:'request_cancelled',trace,elapsed_ms:elapsed,since_last_chunk_ms:Date.now()-lastActivityAt});
+          // Native request deadlines look like cancellations, not upstream
+          // errors. Count prolonged cancellations so SDK retries cannot bypass
+          // the shared budget. Short user interrupts remain unpenalized.
+          if(!attemptCounted&&elapsed>=cancelStallAfter){
+            attemptCounted=true;markStalled(fingerprint,trace,'prolonged_client_cancellation');
+          }
+        }
         controller?.abort();
       });
       let completed;
       for(let attempt=1;attempt<=attempts;attempt++) {
+        attemptCounted=false;
         controller=new AbortController();controllers.add(controller);
         let timer,totalTimer,requestID='unknown',responseID='unknown';
         let phase='authorization',lastEvent='none',lastChunkAt=Date.now(),lastEventAt=Date.now(),receivedBytes=0;
@@ -280,7 +300,7 @@ export async function startBridge(model,catalog,options={}) {
           }
           beginStream();
           for await(const event of sseEvents(response.body,bytes=>{
-            receivedBytes+=bytes;lastChunkAt=Date.now();reset();
+            receivedBytes+=bytes;lastChunkAt=Date.now();lastActivityAt=lastChunkAt;reset();
           })) {
             lastEvent=event.type;lastEventAt=Date.now();
             eventCount++;
@@ -300,13 +320,10 @@ export async function startBridge(model,catalog,options={}) {
           const e=controller.signal.aborted?(controller.signal.reason||error):error;
           if(res.destroyed)throw e;
           if(['stream_idle_timeout','response_deadline'].includes(e.code)){
-            const count=(stalledRequests.get(fingerprint)?.count||0)+1;
-            stalledRequests.set(fingerprint,{count,time:Date.now()});
-            if(stalledRequests.size>256)stalledRequests.delete(stalledRequests.keys().next().value);
-            if(count>=stallLimit){
+            attemptCounted=true;
+            if(markStalled(fingerprint,trace,e.code)){
               e.retryable=false;e.stopRetry=true;
               e.message+='; automatic retry budget exhausted for this unchanged request';
-              diagnose({event:'retry_guard_open',trace,stall_count:count,stall_limit:stallLimit,status:504});
             }
           }
           // No text or tool calls have been delivered yet, so retrying cannot
