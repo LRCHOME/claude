@@ -1,7 +1,6 @@
 import {spawn} from 'node:child_process';
-import {login,loadAuth} from './gpt-auth.mjs';
-import {modelCatalog,startBridge} from './gpt-bridge.mjs';
-import {createDiagnostics} from './gpt-diagnostics.mjs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 async function runClaude(args,env){
  const child=spawn(process.platform==='win32'?'claude.exe':'claude',args,{stdio:'inherit',env,windowsHide:false});
@@ -17,12 +16,16 @@ async function main(){
  if(args.length===1 && ['--help','-h','--version','-v'].includes(args[0])){
   process.exitCode=await runClaude(args,process.env);return;
  }
- if(args[0]==='--login'){await login();return;}
+ // Native help/version must work before npm dependencies or login exist.
+ if(args[0]==='--login'){const {login}=await import('./gpt-auth.mjs');await login();return;}
  if(args[0]==='--launcher-info'){
+  const {loadAuth}=await import('./gpt-auth.mjs');
   try{const a=loadAuth();console.log(JSON.stringify({authorization:'ChatGPT plan',signed_in:true,email:a.email,expires_at:new Date(a.expires_at).toISOString(),endpoint:'https://api.openai.com/v1/responses'},null,2));}
   catch(e){console.error(e.message);process.exitCode=1;}
   return;
  }
+ const {modelCatalog,startBridge}=await import('./gpt-bridge.mjs');
+ const {createDiagnostics}=await import('./gpt-diagnostics.mjs');
  const catalog=await modelCatalog();
  if(args[0]==='--models'){console.log(JSON.stringify(catalog.map(m=>({model:m.slug,name:m.display_name})),null,2));return;}
  const model=process.env.GPT_CLAUDE_MODEL || (catalog.some(m=>m.slug==='gpt-6.1-sol')?'gpt-6.1-sol':catalog[0]?.slug);
@@ -55,4 +58,11 @@ async function main(){
   process.exitCode=await runClaude(args,env);
  }finally{bridge.close();}
 }
-main().catch(e=>{console.error('gpt_claude: '+e.message);process.exitCode=1;});
+main().catch(e=>{
+ if(e.code==='ERR_MODULE_NOT_FOUND'&&e.message.includes('undici')){
+  console.error('gpt_claude: missing npm dependency undici. Run npm ci in '+path.dirname(fileURLToPath(import.meta.url))+'.');
+ }else if(e.code==='ENOENT'&&e.path==='claude.exe'){
+  console.error('gpt_claude: native Claude Code (claude.exe) was not found in PATH. Install it and reopen the terminal.');
+ }else console.error('gpt_claude: '+e.message);
+ process.exitCode=1;
+});

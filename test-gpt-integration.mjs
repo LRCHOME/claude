@@ -296,3 +296,67 @@ test('a stalled response records phase and last event without storing request co
   assert.ok(failure.since_last_chunk_ms>0);
   assert.doesNotMatch(JSON.stringify(events),/PRIVATE PROMPT|test-token/);
 });
+
+test('an SSE response larger than one MiB is fully read through response.completed',async t=>{
+  const text='x'.repeat(1200000),events=[];
+  const {post}=await fixture(t,(req,res)=>{
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.write('data: '+JSON.stringify({type:'response.output_text.delta',delta:text})+'\n\n');
+    res.write('data: {"type":"response.output_text.done"}\n\n');
+    res.end('data: '+JSON.stringify({type:'response.completed',response:{output:[{type:'message',role:'assistant',content:[{type:'output_text',text}]}]}})+'\n\n');
+  },{diagnostics:event=>events.push(event)});
+  const response=await post({});
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).content.find(block=>block.type==='text').text.length,text.length);
+  const completed=events.find(event=>event.event==='attempt_completed');
+  assert.equal(completed.output_text_chars,text.length);
+  assert.equal(completed.output_text_done,1);
+  assert.ok(completed.received_bytes>1024*1024);
+});
+
+test('identical client retries share one bounded stream-stall budget',async t=>{
+  let calls=0;
+  const {post}=await fixture(t,()=>{calls++;},{idleTimeout:20,attempts:1});
+  assert.equal((await post({})).status,504);
+  assert.equal((await post({})).status,504);
+  const blocked=await post({});
+  assert.equal(blocked.status,504);
+  assert.equal(blocked.headers.get('x-should-retry'),'false');
+  assert.equal((await blocked.json()).error.type,'timeout_error');
+  assert.equal(calls,2);
+});
+
+test('internal retries stop at the shared stall budget, without a third upstream call',async t=>{
+  let calls=0;const events=[];
+  const {post}=await fixture(t,()=>{calls++;},{idleTimeout:20,diagnostics:event=>events.push(event)});
+  const response=await post({});
+  assert.equal(response.status,504);
+  assert.equal(response.headers.get('x-should-retry'),'false');
+  assert.equal(calls,2);
+  assert.equal(events.filter(event=>event.event==='retry_guard_open').length,1);
+});
+
+test('SSE timeout uses timeout_error and a following retry is blocked before SSE starts',async t=>{
+  let calls=0;
+  const {post}=await fixture(t,(req,res)=>{
+    calls++;res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.write('data: {"type":"response.created"}\n\n');
+  },{idleTimeout:20,stallLimit:1});
+  const response=await post({stream:true});
+  const events=[];for await(const event of sseEvents(response.body))events.push(event);
+  assert.equal(events.at(-1).error.type,'timeout_error');
+  const blocked=await post({stream:true});
+  assert.equal(blocked.status,504);
+  assert.equal(blocked.headers.get('x-should-retry'),'false');
+  assert.equal(calls,1);
+});
+
+test('a changed request is not blocked by another request stall budget',async t=>{
+  let calls=0,recovered=false;
+  const {post}=await fixture(t,(req,res)=>{calls++;if(recovered)res.end(done());},{idleTimeout:20,stallLimit:1});
+  assert.equal((await post({})).status,504);
+  recovered=true;
+  assert.equal((await post({})).status,504);
+  assert.equal((await post({messages:[{role:'user',content:'different fixture request'}]})).status,200);
+  assert.equal(calls,2);
+});
