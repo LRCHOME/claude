@@ -392,3 +392,47 @@ test('a short user interruption leaves the same request retryable',async t=>{
   await second.text();
   assert.equal(calls,2);
 });
+
+test('tool calls survive when completed.output is empty but output_item.done carries the call',async t=>{
+  const call={type:'function_call',id:'fc_stream',call_id:'call_stream',namespace:'claude',name:'Read',arguments:'{"file_path":"fixture.txt"}'};
+  const {post}=await fixture(t,(req,res)=>res.end(
+    'data: '+JSON.stringify({type:'response.output_item.done',output_index:0,item:call})+'\n\n'+
+    'data: {"type":"response.completed","response":{"id":"resp_empty_terminal","output":[]}}\n\n'
+  ));
+  const response=await post({tools:[{name:'Read',input_schema:{type:'object'}}]});
+  assert.equal(response.status,200);
+  const message=await response.json();
+  assert.equal(message.stop_reason,'tool_use');
+  assert.deepEqual(message.content.find(block=>block.type==='tool_use'),{type:'tool_use',id:'call_stream',name:'Read',input:{file_path:'fixture.txt'}});
+});
+
+test('streamed text survives a terminal response containing only reasoning',async t=>{
+  const reason={type:'reasoning',id:'rs_terminal',summary:[],encrypted_content:'fixture'};
+  const message={type:'message',id:'msg_stream',role:'assistant',phase:'final',content:[{type:'output_text',text:'Visible answer'}]};
+  const {post}=await fixture(t,(req,res)=>res.end(
+    'data: '+JSON.stringify({type:'response.output_item.done',output_index:1,item:message})+'\n\n'+
+    'data: '+JSON.stringify({type:'response.completed',response:{output:[reason]}})+'\n\n'
+  ));
+  const response=await post({stream:true});
+  const events=[];for await(const event of sseEvents(response.body))events.push(event);
+  assert.equal(events.find(event=>event.type==='content_block_delta').delta.text,'Visible answer');
+  assert.equal(events.at(-1).type,'message_stop');
+});
+
+test('a genuinely empty completed response fails explicitly without retrying or ending the turn silently',async t=>{
+  let calls=0;
+  const {post}=await fixture(t,(req,res)=>{calls++;res.end('data: {"type":"response.completed","response":{"output":[{"type":"reasoning","id":"rs_only","summary":[]}]}}\n\n');});
+  const response=await post({});
+  assert.equal(response.status,502);
+  assert.equal(response.headers.get('x-should-retry'),'false');
+  assert.match((await response.json()).error.message,/without visible text or tool calls/);
+  assert.equal(calls,1);
+});
+
+test('an added but unfinished tool call is never recovered as an executable call',async t=>{
+  const {post}=await fixture(t,(req,res)=>res.end(
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_unfinished","call_id":"call_unfinished","name":"Read","arguments":""}}\n\n'+
+    'data: {"type":"response.completed","response":{"output":[]}}\n\n'
+  ));
+  assert.equal((await post({tools:[{name:'Read',input_schema:{type:'object'}}]})).status,502);
+});

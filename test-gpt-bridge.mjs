@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import {convertRequest,anthropicResponse,sseEvents} from './gpt-bridge.mjs';
+import {convertRequest,anthropicResponse,sseEvents,completeStreamResponse} from './gpt-bridge.mjs';
 import {validateID} from './gpt-auth.mjs';
 
 test('converts inline system and tools to stateless subscription request',()=>{
@@ -20,6 +20,19 @@ test('preserves encrypted reasoning, phase, namespace and call id over Claude to
 });
 test('does not execute unexpected model tools',()=>{
  assert.throws(()=>anthropicResponse({output:[{type:'function_call',name:'Other',call_id:'c',arguments:'{}'}]},'test-model',['Read']),/unknown/);
+});
+
+test('stream output is ordered by output_index even when done events arrive out of order',()=>{
+ const a={type:'function_call',id:'fc_a',call_id:'a',name:'Read',arguments:'{}'};
+ const b={type:'function_call',id:'fc_b',call_id:'b',name:'Read',arguments:'{}'};
+ assert.deepEqual(completeStreamResponse({output:[]},new Map([[1,b],[0,a]])).output,[a,b]);
+});
+
+test('stream items merge without duplicate IDs and retain complete arguments',()=>{
+ const call={type:'function_call',id:'fc_a',call_id:'a',name:'Read',arguments:'{"file_path":"a"}'};
+ const result=completeStreamResponse({output:[{...call,arguments:''}]},new Map([[0,call]]));
+ assert.equal(result.output.length,1);
+ assert.equal(result.output[0].arguments,call.arguments);
 });
 
 function parallelBatch() {

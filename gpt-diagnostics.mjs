@@ -8,7 +8,7 @@ const fields=new Set(['event','trace','model','attempt','elapsed_ms','input_byte
   'request_id','response_id','status','error_type','error_code','phase','last_event','received_bytes',
   'since_last_chunk_ms','since_last_event_ms','retryable','stop_reason','event_count',
   'output_text_chars','output_items_done','output_text_done','idle_timeout_ms','response_timeout_ms','client_max_tokens',
-  'stall_count','stall_limit']);
+  'stall_count','stall_limit','terminal_output_items','streamed_output_items','output_items']);
 export function createDiagnostics({directory=path.join(os.homedir(),'.config','gpt_claude','logs'),
   enabled=process.env.GPT_CLAUDE_LOGGING!=='0',maxBytes=5*1024*1024,warn=console.error}={}) {
   const filename=path.join(directory,`gpt-${new Date().toISOString().slice(0,10)}-${process.pid}-${crypto.randomUUID().slice(0,8)}.jsonl`);

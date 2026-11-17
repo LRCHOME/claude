@@ -98,6 +98,17 @@ export async function* sseEvents(body,onChunk=()=>{}) {
   }
   if(buffer.trim())throw new Error('Truncated OpenAI event stream');
 }
+export function completeStreamResponse(response,items) {
+  // Some gateways omit output from the terminal event. The complete items
+  // were already delivered in output_item.done; never discard those calls.
+  const output=[...(response.output||[])];
+  for(const [index,item] of [...items].sort((a,b)=>a[0]-b[0])) {
+    const existing=item.id?output.findIndex(candidate=>candidate.id===item.id):-1;
+    if(existing>=0)output[existing]={...output[existing],...item};
+    else output.splice(Math.min(index,output.length),0,item);
+  }
+  return {...response,output};
+}
 export function anthropicResponse(response,model,toolNames=[]) {
   const content=[];
   if(response.output?.length)content.push({type:'redacted_thinking',data:replayPrefix+Buffer.from(JSON.stringify({output:response.output})).toString('base64url')});
@@ -112,6 +123,10 @@ export function anthropicResponse(response,model,toolNames=[]) {
       content.push({type:'tool_use',id:item.call_id,name,input:JSON.parse(item.arguments||'{}')});
     }
     else if(item.type!=='reasoning')throw new Error('Unsupported OpenAI output: '+item.type);
+  }
+  if(!content.some(block=>block.type==='tool_use'||block.type==='text'&&block.text?.trim())){
+    throw Object.assign(apiError('OpenAI completed the response without visible text or tool calls.',502,'api_error'),
+      {code:'empty_response',retryable:false,stopRetry:true});
   }
   const usage=response.usage||{},cached=usage.input_tokens_details?.cached_tokens||0;
   return {id:response.id||'msg_'+crypto.randomUUID(),type:'message',role:'assistant',model,content,
@@ -266,11 +281,13 @@ export async function startBridge(model,catalog,options={}) {
       });
       let completed;
       for(let attempt=1;attempt<=attempts;attempt++) {
+        completed=undefined;
         attemptCounted=false;
         controller=new AbortController();controllers.add(controller);
         let timer,totalTimer,requestID='unknown',responseID='unknown';
         let phase='authorization',lastEvent='none',lastChunkAt=Date.now(),lastEventAt=Date.now(),receivedBytes=0;
         let eventCount=0,outputTextChars=0,outputItemsDone=0,outputTextDone=0;
+        const streamedItems=new Map();
         let wait=retryDelay*2**(attempt-1)*(1+Math.random()*.25);
         const reset=()=>{clearTimeout(timer);timer=setTimeout(()=>controller.abort(Object.assign(apiError('OpenAI stream idle timeout',504,'timeout_error'),{code:'stream_idle_timeout'})),idleTimeout);};
         try {
@@ -305,12 +322,23 @@ export async function startBridge(model,catalog,options={}) {
             lastEvent=event.type;lastEventAt=Date.now();
             eventCount++;
             if(event.type==='response.output_text.delta'&&typeof event.delta==='string')outputTextChars+=event.delta.length;
-            if(event.type==='response.output_item.done')outputItemsDone++;
+            if(event.type==='response.output_item.done'){
+              outputItemsDone++;
+              if(event.item&&Number.isInteger(event.output_index)&&event.output_index>=0)streamedItems.set(event.output_index,event.item);
+            }
             if(event.type==='response.output_text.done')outputTextDone++;
             if(event.response?.id)responseID=safeDetail(event.response.id);
             if(event.type==='response.failed' || event.type==='error')throw withRetryAfter(upstreamError(event));
             if(event.type==='response.incomplete')throw apiError('OpenAI response incomplete',502);
-            if(event.type==='response.completed'){completed=event.response;break;}
+            if(event.type==='response.completed'){
+              const terminalItems=event.response.output?.length||0;
+              completed=completeStreamResponse(event.response,streamedItems);
+              diagnose({event:'response_assembled',trace,attempt,terminal_output_items:terminalItems,streamed_output_items:streamedItems.size,output_items:completed.output.length});
+              // Validate before calling this attempt a success. In particular,
+              // reasoning-only output cannot finish a Claude user turn.
+              anthropicResponse(completed,chosen,(body.tools||[]).map(tool=>tool.name));
+              break;
+            }
           }
           if(!completed)throw apiError('OpenAI stream ended without completion');
           stalledRequests.delete(fingerprint);
