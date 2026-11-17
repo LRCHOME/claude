@@ -7,7 +7,7 @@
     "node": ">=20.18.1"
   },
   "scripts": {
-    "test": "node --test test-gpt-bridge.mjs test-gpt-network.mjs test-gpt-integration.mjs",
+    "test": "node --test test-gpt-bridge.mjs test-gpt-network.mjs test-gpt-integration.mjs test-gpt-diagnostics.mjs",
     "test:python": "python -m unittest discover -p test_*.py",
     "smoke:gpt": "node smoke-gpt-live.mjs",
     "smoke:resume": "node smoke-gpt-resume.mjs",

@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
 import {login,loadAuth} from './gpt-auth.mjs';
 import {modelCatalog,startBridge} from './gpt-bridge.mjs';
+import {createDiagnostics} from './gpt-diagnostics.mjs';
 
 async function runClaude(args,env){
  const child=spawn(process.platform==='win32'?'claude.exe':'claude',args,{stdio:'inherit',env,windowsHide:false});
@@ -26,7 +27,9 @@ async function main(){
  if(args[0]==='--models'){console.log(JSON.stringify(catalog.map(m=>({model:m.slug,name:m.display_name})),null,2));return;}
  const model=process.env.GPT_CLAUDE_MODEL || (catalog.some(m=>m.slug==='gpt-6.1-sol')?'gpt-6.1-sol':catalog[0]?.slug);
  if(!model || !catalog.some(m=>m.slug===model))throw new Error('Requested model unavailable. See gpt_claude --models.');
- const bridge=await startBridge(model,catalog);
+ const diagnostics=createDiagnostics();
+ const bridge=await startBridge(model,catalog,{diagnostics});
+ if(diagnostics.path)console.error('Диагностика запросов: '+diagnostics.path);
  const env={...process.env};
  for(const key of ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','ANTHROPIC_CUSTOM_HEADERS',
   'CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY','ANTHROPIC_DEFAULT_MODEL','ANTHROPIC_SMALL_FAST_MODEL'])delete env[key];

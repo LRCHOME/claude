@@ -232,3 +232,67 @@ test('long Retry-After is forwarded without an early internal retry',async t=>{
   assert.equal((await response.json()).error.type,'overloaded_error');
   assert.equal(calls,1);
 });
+
+test('SSE keepalive traffic prevents a false network idle timeout',async t=>{
+  let calls=0;
+  const {post}=await fixture(t,(req,res)=>{
+    calls++;res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.write(': keepalive\n\n');
+    let ticks=0;
+    const timer=setInterval(()=>{
+      if(++ticks===8){clearInterval(timer);res.end(done());}
+      else res.write(': keepalive\n\n');
+    },15);
+    res.on('close',()=>clearInterval(timer));
+  },{idleTimeout:60,responseTimeout:1000,attempts:1});
+  assert.equal((await post({})).status,200);
+  assert.equal(calls,1);
+});
+
+test('a slowly arriving SSE frame counts as live traffic before JSON parsing',async t=>{
+  const {post}=await fixture(t,(req,res)=>{
+    const bytes=Buffer.from(done());let offset=0;
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    const timer=setInterval(()=>{
+      res.write(bytes.subarray(offset,offset+24));offset+=24;
+      if(offset>=bytes.length){clearInterval(timer);res.end();}
+    },15);
+    res.on('close',()=>clearInterval(timer));
+  },{idleTimeout:60,responseTimeout:1000,attempts:1});
+  const response=await post({});
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).stop_reason,'end_turn');
+});
+
+test('endless keepalives still hit the overall response deadline',async t=>{
+  const events=[];
+  const {post}=await fixture(t,(req,res)=>{
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.write(': keepalive\n\n');
+    const timer=setInterval(()=>res.write(': keepalive\n\n'),15);
+    res.on('close',()=>clearInterval(timer));
+  },{idleTimeout:60,responseTimeout:130,attempts:1,diagnostics:event=>events.push(event)});
+  const response=await post({});
+  assert.equal(response.status,504);
+  assert.match((await response.json()).error.message,/response deadline/);
+  const failure=events.find(event=>event.event==='attempt_failed');
+  assert.equal(failure.phase,'stream');
+  assert.ok(failure.received_bytes>0);
+  assert.equal(failure.last_event,'none');
+});
+
+test('a stalled response records phase and last event without storing request content',async t=>{
+  const events=[];
+  const {post}=await fixture(t,(req,res)=>{
+    res.writeHead(200,{'Content-Type':'text/event-stream','x-request-id':'req_stall'});
+    res.write('data: {"type":"response.created","response":{"id":"resp_stall"}}\n\n');
+  },{idleTimeout:40,attempts:1,diagnostics:event=>events.push(event)});
+  assert.equal((await post({messages:[{role:'user',content:'PRIVATE PROMPT'}]})).status,504);
+  const failure=events.find(event=>event.event==='attempt_failed');
+  assert.equal(failure.request_id,'req_stall');
+  assert.equal(failure.response_id,'resp_stall');
+  assert.equal(failure.last_event,'response.created');
+  assert.equal(failure.phase,'stream');
+  assert.ok(failure.since_last_chunk_ms>0);
+  assert.doesNotMatch(JSON.stringify(events),/PRIVATE PROMPT|test-token/);
+});

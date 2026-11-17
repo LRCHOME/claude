@@ -83,9 +83,10 @@ export function convertRequest(body,model) {
   return request;
 }
 
-export async function* sseEvents(body) {
+export async function* sseEvents(body,onChunk=()=>{}) {
   let buffer='';const decoder=new TextDecoder();
   for await(const bytes of body) {
+    onChunk(bytes.length);
     buffer+=decoder.decode(bytes,{stream:true});
     buffer=buffer.replaceAll('\r\n','\n');
     let end;
@@ -170,6 +171,7 @@ export function upstreamError(event,httpStatus) {
   if(event.response?.id)parts.push('response='+safeDetail(event.response.id));
   if(parts.length===1)parts.push('no error details provided');
   const error=apiError(parts.join('; '),status,errorType);
+  if(code)error.code=String(code);
   if(['insufficient_quota','usage_limit_reached'].includes(code))error.retryable=false;
   return error;
 }
@@ -187,10 +189,13 @@ export async function startBridge(model,catalog,options={}) {
   const fetch=options.fetch||proxyFetch,getToken=options.accessToken||accessToken;
   const idleTimeout=options.idleTimeout??Number(process.env.GPT_CLAUDE_IDLE_TIMEOUT_MS||120000);
   if(!Number.isSafeInteger(idleTimeout)||idleTimeout<1)throw new Error('Invalid GPT_CLAUDE_IDLE_TIMEOUT_MS');
+  const responseTimeout=options.responseTimeout??Number(process.env.GPT_CLAUDE_RESPONSE_TIMEOUT_MS||900000);
+  if(!Number.isSafeInteger(responseTimeout)||responseTimeout<1)throw new Error('Invalid GPT_CLAUDE_RESPONSE_TIMEOUT_MS');
   const attempts=options.attempts??3;
   const retryDelay=options.retryDelay??1000;
   const maxRetryDelay=options.maxRetryDelay??30000;
   const log=options.log||((value)=>console.error('gpt_claude: '+value));
+  const diagnose=options.diagnostics||(()=>{});
   const localToken=crypto.randomBytes(32).toString('base64url');
   const allowed=new Set(catalog.map(m=>m.slug));
   const controllers=new Set();
@@ -216,6 +221,7 @@ export async function startBridge(model,catalog,options={}) {
         // Conservative estimate; this is not an exact OpenAI tokenizer count.
         json(200,{input_tokens:Buffer.byteLength(JSON.stringify(request))});return;
       }
+      diagnose({event:'request_start',trace,model:chosen,input_bytes:Buffer.byteLength(JSON.stringify(request)),input_items:request.input.length,tool_count:body.tools?.length||0});
       const wantsStream=body.stream===true;
       const messageID='msg_'+crypto.randomUUID();
       const beginStream=()=>{if(streaming||!wantsStream)return;
@@ -224,18 +230,27 @@ export async function startBridge(model,catalog,options={}) {
         sendEvent(res,'message_start',{message:{id:messageID,type:'message',role:'assistant',model:chosen,content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:0,output_tokens:0}}});
         ping=setInterval(()=>sendEvent(res,'ping',{}),10000);
       };
-      res.on('close',()=>controller?.abort());
+      res.on('close',()=>{
+        if(!res.writableEnded)diagnose({event:'request_cancelled',trace,elapsed_ms:Date.now()-started});
+        controller?.abort();
+      });
       let completed;
       for(let attempt=1;attempt<=attempts;attempt++) {
         controller=new AbortController();controllers.add(controller);
-        let timer,requestID='unknown',responseID='unknown';
+        let timer,totalTimer,requestID='unknown',responseID='unknown';
+        let phase='authorization',lastEvent='none',lastChunkAt=Date.now(),lastEventAt=Date.now(),receivedBytes=0;
         let wait=retryDelay*2**(attempt-1)*(1+Math.random()*.25);
         const reset=()=>{clearTimeout(timer);timer=setTimeout(()=>controller.abort(apiError('OpenAI stream idle timeout',504)),idleTimeout);};
         try {
           reset();
+          totalTimer=setTimeout(()=>controller.abort(apiError('OpenAI response deadline exceeded',504)),responseTimeout);
           const token=await getToken();
           controller.signal.throwIfAborted();
+          phase='headers';
+          reset();
           const response=await fetch(resource+'/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(request),signal:controller.signal});
+          phase='stream';
+          reset();
           requestID=response.headers.get('x-request-id')||response.headers.get('request-id')||'unknown';
           const withRetryAfter=error=>{
             const retryAfter=retryAfterMs(response.headers);
@@ -252,14 +267,17 @@ export async function startBridge(model,catalog,options={}) {
             throw withRetryAfter(error);
           }
           beginStream();
-          for await(const event of sseEvents(response.body)) {
-            reset();
+          for await(const event of sseEvents(response.body,bytes=>{
+            receivedBytes+=bytes;lastChunkAt=Date.now();reset();
+          })) {
+            lastEvent=event.type;lastEventAt=Date.now();
             if(event.response?.id)responseID=safeDetail(event.response.id);
             if(event.type==='response.failed' || event.type==='error')throw withRetryAfter(upstreamError(event));
             if(event.type==='response.incomplete')throw apiError('OpenAI response incomplete',502);
             if(event.type==='response.completed'){completed=event.response;break;}
           }
           if(!completed)throw apiError('OpenAI stream ended without completion');
+          diagnose({event:'attempt_completed',trace,attempt,elapsed_ms:Date.now()-started,request_id:requestID,response_id:responseID,received_bytes:receivedBytes});
           break;
         } catch(error) {
           const e=controller.signal.aborted?(controller.signal.reason||error):error;
@@ -269,10 +287,11 @@ export async function startBridge(model,catalog,options={}) {
           const retryable=e.retryable!==false&&(!e.status || [408,429,500,502,503,504,529].includes(e.status));
           if(e.retryAt!==undefined)wait=Math.max(wait,e.retryAt-Date.now());
           log(`${trace} attempt ${attempt}/${attempts}, ${Date.now()-started}ms, request ${safeDetail(requestID)}, response ${responseID}: ${e.message}`);
+          diagnose({event:'attempt_failed',trace,attempt,elapsed_ms:Date.now()-started,request_id:requestID,response_id:responseID,status:e.status||502,error_type:e.type||'api_error',error_code:e.code||e.cause?.code,phase,last_event:lastEvent,received_bytes:receivedBytes,since_last_chunk_ms:Date.now()-lastChunkAt,since_last_event_ms:Date.now()-lastEventAt,retryable});
           // Long server-requested pauses belong to the client. Never retry
           // earlier than Retry-After just to fit our internal retry budget.
           if(!retryable||attempt===attempts||wait>maxRetryDelay)throw e.status?e:apiError('OpenAI connection failed: '+e.message);
-        } finally {clearTimeout(timer);controller.abort();controllers.delete(controller);}
+        } finally {clearTimeout(timer);clearTimeout(totalTimer);controller.abort();controllers.delete(controller);}
         if(res.destroyed)return;
         controller=new AbortController();controllers.add(controller);
         try{await delay(wait,undefined,{signal:controller.signal});}
@@ -280,10 +299,12 @@ export async function startBridge(model,catalog,options={}) {
         if(res.destroyed)return;
       }
       const message=anthropicResponse(completed,chosen,(body.tools||[]).map(t=>t.name));
+      diagnose({event:'request_completed',trace,elapsed_ms:Date.now()-started,stop_reason:message.stop_reason});
       if(process.env.GPT_CLAUDE_DEBUG==='1')log(`${trace} completed in ${Date.now()-started}ms, ${message.stop_reason}`);
       if(streaming){message.id=messageID;sendMessage(res,message,true);}else json(200,message);
     } catch(e) {
       if(!res.destroyed){
+        diagnose({event:'request_failed',trace,elapsed_ms:Date.now()-started,status:e.status||400,error_type:e.type||'invalid_request_error',error_code:e.code});
         const error={type:e.type||'invalid_request_error',message:e.message};
         const headers=e.retryAt===undefined?{}:{'Retry-After':String(Math.ceil(Math.max(0,e.retryAt-Date.now())/1000))};
         if(streaming){sendEvent(res,'error',{error});res.end();}else json(e.status||400,{type:'error',error},headers);
