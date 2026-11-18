@@ -11,7 +11,8 @@
     "test:python": "python -m unittest discover -p test_*.py",
     "smoke:gpt": "node smoke-gpt-live.mjs",
     "smoke:resume": "node smoke-gpt-resume.mjs",
-    "smoke:partial": "node smoke-gpt-partial-history.mjs"
+    "smoke:partial": "node smoke-gpt-partial-history.mjs",
+    "smoke:stream": "node smoke-gpt-stream.mjs"
   },
   "dependencies": {
     "undici": "7.30.2"

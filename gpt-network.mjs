@@ -22,12 +22,17 @@ if ($resolved -and $resolved.AbsoluteUri -ne $target.AbsoluteUri) {
 export function createProxyFetch({platform=process.platform,env=process.env,
   resolve=resolveSystemProxy,fetch=(...args)=>globalThis.fetch(...args)}={}) {
   const routes=new Map(),agents=new Map();
-  let environmentAgent;
+  let environmentAgent,directAgent;
+  // Prefer HTTP/2 over TLS, including inside an HTTP CONNECT tunnel. The
+  // inference route can cut off long HTTP/1.1 streams while HTTP/2 continues.
+  // ALPN still falls back to HTTP/1.1 for servers that do not offer HTTP/2.
+  const direct=()=>directAgent??=new Agent({allowH2:true});
   async function request(input,options={}) {
     const url=new URL(typeof input==='string' || input instanceof URL?input:input.url);
-    if(platform!=='win32')return fetch(input,options);
+    if(platform!=='win32')return fetch(input,{...options,dispatcher:direct()});
     if(['HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'].some(key=>env[key])) {
       environmentAgent??=new EnvHttpProxyAgent({
+        allowH2:true,requestTls:{allowH2:true},
         httpProxy:env.http_proxy || env.HTTP_PROXY,
         httpsProxy:env.https_proxy || env.HTTPS_PROXY,
         noProxy:env.no_proxy || env.NO_PROXY
@@ -44,10 +49,11 @@ export function createProxyFetch({platform=process.platform,env=process.env,
     try {proxy=await route.promise;}
     catch {routes.delete(key);throw new Error('Не удалось определить системный прокси Windows. Проверьте настройки подключения.');}
     const agentKey=proxy || 'DIRECT';
-    if(!agents.has(agentKey))agents.set(agentKey,proxy?new ProxyAgent(proxy):new Agent());
+    if(!agents.has(agentKey))agents.set(agentKey,proxy?
+      new ProxyAgent({uri:proxy,allowH2:true,requestTls:{allowH2:true}}):direct());
     return fetch(input,{...options,dispatcher:agents.get(agentKey)});
   }
-  request.close=async()=>{await Promise.all([...agents.values(),environmentAgent].filter(Boolean).map(agent=>agent.close()));};
+  request.close=async()=>{await Promise.all([...new Set([...agents.values(),environmentAgent,directAgent])].filter(Boolean).map(agent=>agent.close()));};
   return request;
 }
 
