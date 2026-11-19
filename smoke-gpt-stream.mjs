@@ -10,7 +10,7 @@ try {
   const response=await proxyFetch(resource+'/responses',{
     method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     signal:AbortSignal.timeout(240000),
-    body:JSON.stringify({model:process.env.GPT_CLAUDE_MODEL||'gpt-6.1-sol',store:false,stream:true,
+    body:JSON.stringify({model:process.env.GPT_CLAUDE_MODEL||'gpt-6.2-sol',store:false,stream:true,
       reasoning:{effort:'low'},input:[{role:'user',content:
         'Print every integer from 1 through 2000 in ascending order, separated by spaces. No code, no explanations, no omissions.'}]})
   });

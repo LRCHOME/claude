@@ -104,13 +104,14 @@ gpt_claude
 gpt_claude --resume
 ```
 
-По умолчанию выбирается `gpt-6.1-sol`, если модель есть в каталоге аккаунта;
-иначе первая доступная. Выбирайте ID из вывода `--models`.
+По умолчанию выбирается `gpt-6.2-sol` со средним уровнем рассуждения (`medium`),
+если модель есть в каталоге аккаунта; иначе первая доступная.
+Переменные ниже позволяют переопределить эти значения. Выбирайте ID из вывода `--models`.
 
 PowerShell:
 
 ```powershell
-$env:GPT_CLAUDE_MODEL = 'gpt-6.1-sol'
+$env:GPT_CLAUDE_MODEL = 'gpt-6.2-sol'
 $env:GPT_CLAUDE_EFFORT = 'medium'
 gpt_claude
 ```
@@ -118,7 +119,7 @@ gpt_claude
 macOS/Linux:
 
 ```sh
-GPT_CLAUDE_MODEL=gpt-6.1-sol GPT_CLAUDE_EFFORT=medium gpt_claude
+GPT_CLAUDE_MODEL=gpt-6.2-sol GPT_CLAUDE_EFFORT=medium gpt_claude
 ```
 
 Допустимые уровни reasoning зависят от модели. Значение `default` отключает
@@ -254,7 +255,7 @@ Claude сможет автоматически завершить уже зав�
 
 | Переменная | Значение по умолчанию | Назначение |
 | --- | --- | --- |
-| `GPT_CLAUDE_MODEL` | Из каталога аккаунта | Модель на весь запуск |
+| `GPT_CLAUDE_MODEL` | `gpt-6.2-sol`, если доступна | Модель на весь запуск |
 | `GPT_CLAUDE_EFFORT` | `medium` | Уровень reasoning |
 | `GPT_CLAUDE_IDLE_TIMEOUT_MS` | `300000` | Таймаут отсутствия сетевых данных, миллисекунды |
 | `GPT_CLAUDE_RESPONSE_TIMEOUT_MS` | `900000` | Общий предел времени одной попытки, миллисекунды |

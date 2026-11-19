@@ -1,7 +1,7 @@
 // Live protocol check. Uses synthetic Read results; executes no real tools.
 import {modelCatalog,startBridge} from './gpt-bridge.mjs';
 const catalog=await modelCatalog();
-const model=process.env.GPT_CLAUDE_MODEL||'gpt-6.1-sol';
+const model=process.env.GPT_CLAUDE_MODEL||'gpt-6.2-sol';
 const bridge=await startBridge(model,catalog);
 async function send(body) {
   const response=await fetch(bridge.url+'/v1/messages',{

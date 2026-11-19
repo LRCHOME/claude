@@ -28,7 +28,7 @@ async function main(){
  const {createDiagnostics}=await import('./gpt-diagnostics.mjs');
  const catalog=await modelCatalog();
  if(args[0]==='--models'){console.log(JSON.stringify(catalog.map(m=>({model:m.slug,name:m.display_name})),null,2));return;}
- const model=process.env.GPT_CLAUDE_MODEL || (catalog.some(m=>m.slug==='gpt-6.1-sol')?'gpt-6.1-sol':catalog[0]?.slug);
+ const model=process.env.GPT_CLAUDE_MODEL || (catalog.some(m=>m.slug==='gpt-6.2-sol')?'gpt-6.2-sol':catalog[0]?.slug);
  if(!model || !catalog.some(m=>m.slug===model))throw new Error('Requested model unavailable. See gpt_claude --models.');
  const diagnostics=createDiagnostics();
  const bridge=await startBridge(model,catalog,{diagnostics});
