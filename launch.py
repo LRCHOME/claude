@@ -31,7 +31,7 @@ def configuration(profile):
     provider_id, model_key = {
         'local': ('mlx', 'local'),
         'ai': ('ai-lrcs', 'local'),
-        'ds': ('deepseek', 'deepseek-v4-pro'),
+        'ds': ('deepseek', 'deepseek-flash'),
     }[profile]
     if profile == 'ai' and provider_id not in config.get('provider', {}):
         # The Windows installation already keeps this connection in pi. Read it
@@ -68,13 +68,16 @@ def configuration(profile):
     if not key and profile != 'local':
         raise ValueError('В OpenCode не задан apiKey для ' + provider_id)
     limit = model.get('limit', {})
-    return {
+    cfg = {
         'config': str(path), 'provider': provider_id, 'model': model_id,
         'base_url': base, 'key': key or 'local-no-key',
         'context': limit.get('context', 1000000 if profile == 'ds' else 262144),
         'output': limit.get('output', 65536 if profile != 'ai' else 32768),
         'fast_model': 'deepseek-flash' if profile == 'ds' and 'deepseek-flash' in provider['models'] else model_id,
     }
+    if profile == 'ds':
+        cfg['effort'] = 'medium'
+    return cfg
 
 
 def environment(cfg, bare=False):
@@ -100,6 +103,8 @@ def environment(cfg, bare=False):
         'CLAUDE_CODE_AUTO_MODE_MODEL': os.environ.get('CLAUDE_CODE_AUTO_MODE_MODEL') or cfg['model'],
     })
     env['ANTHROPIC_API_KEY' if bare else 'ANTHROPIC_AUTH_TOKEN'] = cfg['key']
+    if cfg.get('effort'):
+        env['CLAUDE_CODE_EFFORT_LEVEL'] = cfg['effort']
     return env
 
 

@@ -5,8 +5,8 @@
         "apiKey": "{env:DEEPSEEK_API_KEY}"
       },
       "models": {
-        "deepseek-v4-pro": {
-          "id": "deepseek-v4-pro",
+        "deepseek-flash": {
+          "id": "deepseek-flash",
           "limit": { "context": 1000000, "output": 65536 }
         }
       }

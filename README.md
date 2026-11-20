@@ -197,9 +197,14 @@ export AI_CLAUDE_API_KEY='YOUR_AI_KEY'
 и укажите ссылку в поле `apiKey`. Относительные пути считаются от каталога
 конфигурации. JSON и файлы ключей читаются как UTF-8, включая BOM.
 
-`ds_claude` использует provider `deepseek`, модель с ключом `deepseek-v4-pro`
+`ds_claude` использует provider `deepseek`, модель с ключом `deepseek-flash`
 и endpoint `https://api.deepseek.com/anthropic`. Проверьте доступность этого
 ID в своём аккаунте; при необходимости измените поле `id` в личном JSON.
+Для основной модели, подагентов и быстрых задач выбирается Flash. Лаунчер
+задаёт `CLAUDE_CODE_EFFORT_LEVEL=medium`. По [правилам DeepSeek](https://api-docs.deepseek.com/guides/thinking_mode/)
+запрошенный `medium` сопоставляется с фактическим `high` на сервере.
+Если обновляете старую конфигурацию, добавьте запись `deepseek-flash`
+в `provider.deepseek.models`, как в [примере](examples/opencode.json).
 
 `ai_claude` использует provider с историческим именем `ai-lrcs` и модель
 с ключом `local`. Значения `baseURL` и `id` настраиваются пользователем;
