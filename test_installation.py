@@ -109,7 +109,7 @@ Ensure-Runtime 'Node' 'OpenJS.NodeJS.LTS' 'Node.js'
     @unittest.skipUnless(os.name == 'nt', 'Windows bootstrap tests')
     def test_failed_package_install_stops_before_path_refresh(self):
         result = self.run_powershell("""
-function Require-Command { param($Name,$HelpText) return 'fixture-winget.exe' }
+function Ensure-WinGet { return 'fixture-winget.exe' }
 function Invoke-Checked { param($Executable,$Arguments,$Label) throw 'fixture package installation failed' }
 function Refresh-ProcessPath { throw 'UNEXPECTED PATH REFRESH' }
 Install-WinGetPackage 'Python.Python.3.14' 'Python' -UserScope
@@ -128,6 +128,88 @@ Install-WinGetPackage 'Python.Python.3.14' 'Python' -UserScope
 """.replace('FIXTURE', quoted))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {'git': True, 'claude': True})
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet bootstrap')
+    def test_working_winget_does_not_trigger_bootstrap(self):
+        result = self.run_powershell("""
+function Find-WinGet { return 'existing-winget.exe' }
+function Register-WinGet { throw 'UNEXPECTED REGISTRATION' }
+function Install-WinGetClient { throw 'UNEXPECTED INSTALL' }
+Ensure-WinGet
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'existing-winget.exe')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet bootstrap')
+    def test_missing_winget_check_only_performs_no_registration_or_download(self):
+        result = self.run_powershell("""
+function Find-WinGet { return $null }
+function Register-WinGet { throw 'UNEXPECTED REGISTRATION' }
+function Install-WinGetClient { throw 'UNEXPECTED INSTALL' }
+Ensure-WinGet -CheckOnly
+""")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('WinGet >=1.8 is required', result.stderr)
+        self.assertNotIn('UNEXPECTED', result.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet bootstrap')
+    def test_registered_app_installer_avoids_downloading_winget(self):
+        result = self.run_powershell("""
+$script:registered = $false
+function Find-WinGet { if ($script:registered) { return 'registered-winget.exe' } }
+function Register-WinGet { $script:registered = $true }
+function Refresh-ProcessPath {}
+function Install-WinGetClient { throw 'UNEXPECTED DOWNLOAD' }
+Ensure-WinGet
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'registered-winget.exe')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet bootstrap')
+    def test_fresh_pc_bootstraps_winget_before_runtime_packages(self):
+        result = self.run_powershell("""
+$script:installed = $false
+$script:steps = @()
+function Find-WinGet { if ($script:installed) { return 'new-winget.exe' } }
+function Register-WinGet { $script:steps += 'register' }
+function Refresh-ProcessPath {}
+function Install-WinGetClient { $script:steps += 'bootstrap'; $script:installed = $true }
+function Invoke-Checked { param($Executable,$Arguments,$Label) $script:steps += ('package:' + $Executable + ':' + $Arguments[2]) }
+Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
+$script:steps | ConvertTo-Json -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Write-Host status is separate from the final JSON line.
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data, ['register', 'bootstrap', 'package:new-winget.exe:OpenJS.NodeJS.LTS'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet bootstrap')
+    def test_failed_winget_bootstrap_cannot_continue_to_package_installation(self):
+        result = self.run_powershell("""
+function Find-WinGet { return $null }
+function Register-WinGet {}
+function Refresh-ProcessPath {}
+function Install-WinGetClient { throw 'fixture bootstrap failed' }
+function Invoke-Checked { throw 'UNEXPECTED PACKAGE INSTALL' }
+Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
+""")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('fixture bootstrap failed', result.stderr)
+        self.assertNotIn('UNEXPECTED PACKAGE INSTALL', result.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet version detection')
+    def test_old_or_broken_winget_is_not_accepted(self):
+        fixtures = []
+        for name, body in [('old', 'echo v1.7.0\nexit /b 0'),
+                           ('good', 'echo v1.12.470\nexit /b 0'),
+                           ('broken', 'exit /b 1')]:
+            file = self.root / (name + '.cmd')
+            file.write_text('@echo off\n' + body + '\n', encoding='ascii')
+            fixtures.append(str(file).replace("'", "''"))
+        result = self.run_powershell("@{old=(Test-WinGet 'OLD');good=(Test-WinGet 'GOOD');broken=(Test-WinGet 'BROKEN')} | ConvertTo-Json -Compress"
+                                     .replace('OLD', fixtures[0]).replace('GOOD', fixtures[1]).replace('BROKEN', fixtures[2]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'old': False, 'good': True, 'broken': False})
 
 
 if __name__ == '__main__':

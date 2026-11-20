@@ -76,8 +76,92 @@ function Find-Runtime([string]$Kind) {
     return $null
 }
 
+function Get-WinGetCandidates {
+    $paths = @(Get-Command 'winget.exe' -All -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+    $paths += "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
+    if (Get-Command 'Get-AppxPackage' -ErrorAction SilentlyContinue) {
+        try {
+            $paths += @(Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop |
+                Where-Object { $_.InstallLocation } | ForEach-Object { Join-Path $_.InstallLocation 'winget.exe' })
+        } catch { Write-Verbose ('App Installer discovery: ' + $_.Exception.Message) }
+    }
+    foreach ($candidate in ($paths | Where-Object { $_ } | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
+    }
+}
+
+function Test-WinGet([string]$Executable) {
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Executable --version 2>&1)
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $versionText = ($output -join ' ').Trim()
+        if ($versionText -notmatch '^v?(\d+\.\d+\.\d+)') { return $false }
+        return ([version]$Matches[1] -ge [version]'1.8.0')
+    } catch { return $false }
+    finally { $ErrorActionPreference = $previousPreference }
+}
+
+function Find-WinGet {
+    foreach ($candidate in @(Get-WinGetCandidates)) {
+        if (Test-WinGet $candidate) { return $candidate }
+    }
+    return $null
+}
+
+function Register-WinGet {
+    if (Get-Command 'Add-AppxPackage' -ErrorAction SilentlyContinue) {
+        try {
+            Write-Host 'Registering App Installer for the current Windows user...'
+            Add-AppxPackage -RegisterByFamilyName -MainPackage 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' -ErrorAction Stop | Out-Null
+        } catch { Write-Verbose ('App Installer registration: ' + $_.Exception.Message) }
+    }
+}
+
+function Install-WinGetClient {
+    Write-Host 'Installing WinGet using the Microsoft.WinGet.Client module from PowerShell Gallery...'
+    $previousProtocol = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = $previousProtocol -bor [Net.SecurityProtocolType]::Tls12
+        if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Version -ge [version]'2.8.5.201' })) {
+            Install-PackageProvider -Name NuGet -MinimumVersion '2.8.5.201' -Scope CurrentUser -Force -Confirm:$false -ErrorAction Stop | Out-Null
+        }
+        $gallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+        if (-not $gallery) {
+            Register-PSRepository -Default -ErrorAction Stop
+            $gallery = Get-PSRepository -Name PSGallery -ErrorAction Stop
+        }
+        if ($gallery.SourceLocation.TrimEnd('/') -ine 'https://www.powershellgallery.com/api/v2') {
+            throw 'PSGallery points to a nonstandard source. Restore the official PowerShell Gallery before continuing.'
+        }
+        Install-Module -Name Microsoft.WinGet.Client -Repository PSGallery -Scope CurrentUser -Force -AllowClobber -Confirm:$false -ErrorAction Stop
+        # Import only repair: the module also exports Install-WinGetPackage,
+        # which must not replace this installer's dependency wrapper.
+        Import-Module Microsoft.WinGet.Client -Cmdlet Repair-WinGetPackageManager -Function @() -Alias @() -ErrorAction Stop
+        Repair-WinGetPackageManager -Latest -Force -ErrorAction Stop | Out-Null
+    } finally { [Net.ServicePointManager]::SecurityProtocol = $previousProtocol }
+}
+
+function Ensure-WinGet([switch]$CheckOnly) {
+    $winget = Find-WinGet
+    if ($winget) { return $winget }
+    if ($CheckOnly) { throw 'WinGet >=1.8 is required. Run install-windows.ps1 without -CheckOnly to install it.' }
+    Register-WinGet
+    Refresh-ProcessPath
+    $winget = Find-WinGet
+    if ($winget) { return $winget }
+    try { Install-WinGetClient }
+    catch { throw ('WinGet bootstrap failed: ' + $_.Exception.Message + ' Check your connection and Windows App Installer policy, then retry. Manual installer: https://aka.ms/getwinget') }
+    Refresh-ProcessPath
+    $winget = Find-WinGet
+    if (-not $winget) { throw 'WinGet bootstrap finished but no working WinGet >=1.8 was found. Restart Windows if requested, then run install-windows.ps1 again.' }
+    return $winget
+}
+
 function Install-WinGetPackage([string]$PackageId, [string]$DisplayName, [switch]$UserScope) {
-    $winget = Require-Command 'winget.exe' ('WinGet is required to install ' + $DisplayName + '. Install or update App Installer from https://aka.ms/getwinget, then run this installer again.')
+    $winget = Ensure-WinGet
     Write-Host ('Installing ' + $DisplayName + ' using WinGet...')
     $arguments = @('install', '--id', $PackageId, '--exact', '--source', 'winget', '--silent',
                    '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')
@@ -103,6 +187,7 @@ foreach ($name in @('gpt_claude', 'ai_claude', 'ds_claude')) {
     if (-not (Test-Path -LiteralPath (Join-Path $binDirectory "$name.cmd"))) { throw "Missing launcher: $name.cmd" }
 }
 Refresh-ProcessPath
+$winget = Ensure-WinGet -CheckOnly:$CheckOnly
 $node = Ensure-Runtime 'Node' 'OpenJS.NodeJS.LTS' 'Node.js >=20.18.1 with npm' -CheckOnly:$CheckOnly
 $python = Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python >=3.10' -CheckOnly:$CheckOnly -UserScope
 $git = Ensure-Runtime 'Git' 'Git.Git' 'Git for Windows' -CheckOnly:$CheckOnly
