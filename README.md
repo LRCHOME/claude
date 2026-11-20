@@ -128,6 +128,21 @@ GPT_CLAUDE_MODEL=gpt-6.2-sol GPT_CLAUDE_EFFORT=medium gpt_claude
 
 ## Настройка ds_claude и ai_claude
 
+Если нужен только DeepSeek на новом компьютере, файл OpenCode не обязателен:
+при отсутствии стандартного `~/.config/opencode/opencode.json` достаточно задать
+`DEEPSEEK_API_KEY`. В PowerShell ключ можно ввести скрыто:
+
+```powershell
+$env:DEEPSEEK_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'API-ключ DeepSeek' -AsSecureString)).Password
+ds_claude --launcher-info
+ds_claude
+```
+
+Переменная действует в текущем терминале. Если задан `OPENCODE_CONFIG`, этот файл
+имеет приоритет и должен существовать. Существующая стандартная конфигурация также
+имеет приоритет; ключ в ней не заменяется значением окружения автоматически.
+Для `ai_claude` и настройки через файл используйте следующие шаги.
+
 ### 1. Скопируйте пример в личную конфигурацию
 
 По умолчанию читается `~/.config/opencode/opencode.json`. Если вы уже используете

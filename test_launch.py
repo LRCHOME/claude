@@ -60,6 +60,45 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(launch.main(), 0)
         self.assertNotIn('fixture-secret', output.getvalue())
 
+    def test_fresh_deepseek_install_uses_environment_key_without_creating_config(self):
+        with patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'fixture-secret'}, clear=True), \
+                patch('launch.Path.expanduser', return_value=self.root / 'missing.json'):
+            cfg = launch.configuration('ds')
+            env = launch.environment(cfg)
+        self.assertEqual(cfg['config'], 'DEEPSEEK_API_KEY (environment)')
+        self.assertEqual(env['ANTHROPIC_MODEL'], 'deepseek-flash')
+        self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'medium')
+        self.assertEqual(env['ANTHROPIC_BASE_URL'], 'https://api.deepseek.com/anthropic')
+        self.assertEqual(env['ANTHROPIC_AUTH_TOKEN'], 'fixture-secret')
+        self.assertFalse((self.root / 'missing.json').exists())
+
+    def test_explicit_missing_config_is_reported_instead_of_using_environment_key(self):
+        missing = self.root / 'explicit.json'
+        output = io.StringIO()
+        with patch.dict(os.environ, {'OPENCODE_CONFIG': str(missing), 'DEEPSEEK_API_KEY': 'fixture-secret'}, clear=True), \
+                patch('sys.argv', ['launch.py', 'ds', '--launcher-info']), contextlib.redirect_stderr(output):
+            self.assertEqual(launch.main(), 1)
+        self.assertIn(str(missing), output.getvalue())
+        self.assertIn('OPENCODE_CONFIG', output.getvalue())
+        self.assertNotIn('fixture-secret', output.getvalue())
+
+    def test_missing_default_config_and_key_explains_fresh_setup(self):
+        missing = self.root / 'missing.json'
+        output = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch('launch.Path.expanduser', return_value=missing), \
+                patch('sys.argv', ['launch.py', 'ds', '--launcher-info']), contextlib.redirect_stderr(output):
+            self.assertEqual(launch.main(), 1)
+        self.assertIn(str(missing), output.getvalue())
+        self.assertIn('DEEPSEEK_API_KEY', output.getvalue())
+
+    def test_missing_key_file_is_reported_without_configuration_values(self):
+        path = self.config({'provider': {'deepseek': {'options': {'apiKey': '{file:missing.key}'},
+            'models': {'deepseek-flash': {}}}}})
+        with patch.dict(os.environ, {'OPENCODE_CONFIG': path}, clear=True):
+            with self.assertRaises(launch.ConfigurationError) as failure:
+                launch.configuration('ds')
+        self.assertIn(str(self.root / 'missing.key'), str(failure.exception))
+
     def test_unix_installer_handles_spaces_and_preserves_arguments(self):
         specification = importlib.util.spec_from_file_location('unix_installer', Path(__file__).with_name('install-unix.py'))
         installer = importlib.util.module_from_spec(specification)

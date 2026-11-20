@@ -9,25 +9,49 @@ import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
 
+class ConfigurationError(ValueError):
+    """An actionable message containing only paths or setting names, never values."""
+
+
 def resolve(value, config_path):
     if not isinstance(value, str):
         return value
     if value.startswith('{env:') and value.endswith('}'):
         name = value[5:-1]
         if not os.environ.get(name):
-            raise ValueError('Не задана переменная ' + name)
+            raise ConfigurationError('Не задана переменная окружения ' + name + '. Задайте её в текущем терминале.')
         return os.environ[name]
     if value.startswith('{file:') and value.endswith('}'):
         path = Path(value[6:-1]).expanduser()
         if not path.is_absolute():
             path = config_path.parent / path
-        return path.read_text(encoding='utf-8-sig').strip()
+        try:
+            return path.read_text(encoding='utf-8-sig').strip()
+        except FileNotFoundError:
+            raise ConfigurationError('Не найден файл API-ключа: ' + str(path)) from None
     return value
 
 
 def configuration(profile):
     path = Path(os.environ.get('OPENCODE_CONFIG', '~/.config/opencode/opencode.json')).expanduser()
-    config = json.loads(path.read_text(encoding='utf-8-sig'))
+    source = str(path)
+    try:
+        config = json.loads(path.read_text(encoding='utf-8-sig'))
+    except FileNotFoundError:
+        if profile == 'ds' and not os.environ.get('OPENCODE_CONFIG') and os.environ.get('DEEPSEEK_API_KEY'):
+            # A fresh DeepSeek-only installation does not need OpenCode or a
+            # config file. Existing and explicitly selected configs still win.
+            config = {'provider': {'deepseek': {'options': {'apiKey': '{env:DEEPSEEK_API_KEY}'},
+                                               'models': {'deepseek-flash': {}}}}}
+            source = 'DEEPSEEK_API_KEY (environment)'
+        else:
+            example = Path(__file__).with_name('examples') / 'opencode.json'
+            help_text = ('Не найден файл настроек: ' + str(path) + '\n'
+                         'Выберите файл через OPENCODE_CONFIG. Пример: ' + str(example))
+            if profile == 'ds':
+                help_text += ('\nДля запуска только DeepSeek без файла настроек задайте DEEPSEEK_API_KEY '
+                              'и уберите OPENCODE_CONFIG, если она задана.')
+            raise ConfigurationError(help_text) from None
     provider_id, model_key = {
         'local': ('mlx', 'local'),
         'ai': ('ai-lrcs', 'local'),
@@ -37,6 +61,7 @@ def configuration(profile):
         # The Windows installation already keeps this connection in pi. Read it
         # there instead of copying its secret into another configuration file.
         path = Path(os.environ.get('PI_MODELS_CONFIG', '~/.pi/agent/models.json')).expanduser()
+        source = str(path)
         pi = json.loads(path.read_text(encoding='utf-8-sig'))
         provider = pi['providers'][provider_id]
         entry = next(m for m in provider['models'] if m['id'] == model_key)
@@ -69,7 +94,7 @@ def configuration(profile):
         raise ValueError('В OpenCode не задан apiKey для ' + provider_id)
     limit = model.get('limit', {})
     cfg = {
-        'config': str(path), 'provider': provider_id, 'model': model_id,
+        'config': source, 'provider': provider_id, 'model': model_id,
         'base_url': base, 'key': key or 'local-no-key',
         'context': limit.get('context', 1000000 if profile == 'ds' else 262144),
         'output': limit.get('output', 65536 if profile != 'ai' else 32768),
@@ -118,6 +143,9 @@ def main():
         return subprocess.call([binary, *args])
     try:
         cfg = configuration(profile)
+    except ConfigurationError as error:
+        print(str(error), file=sys.stderr)
+        return 1
     except (OSError, ValueError, KeyError) as error:
         # Do not include config values or parser source text: they may contain keys.
         print('Не удалось прочитать подключение из OpenCode (' + type(error).__name__ + '). Проверь provider/model/apiKey и OPENCODE_CONFIG.', file=sys.stderr)
