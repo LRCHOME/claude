@@ -74,26 +74,28 @@ Ensure-Runtime 'Node' 'OpenJS.NodeJS.LTS' 'Node.js >=20.18.1 with npm' -CheckOnl
     def test_fresh_install_installs_dependencies_then_rediscovers_them(self):
         result = self.run_powershell("""
 $script:installed = @{}
-$script:calls = @()
+$script:calls = @(); $script:scopes = @()
 function Find-Runtime { param($Kind) if ($script:installed.ContainsKey($Kind)) { return ($Kind + '.exe') } }
 function Install-WinGetPackage {
-    param($PackageId, $DisplayName, [switch]$UserScope)
+    param($PackageId, $DisplayName, [switch]$UserScope, [switch]$MachineScope)
     $kind = @{ 'OpenJS.NodeJS.LTS'='Node'; 'Python.Python.3.14'='Python'; 'Git.Git'='Git'; 'Anthropic.ClaudeCode'='Claude' }[$PackageId]
     $script:installed[$kind] = $true
     $script:calls += $PackageId
+    $script:scopes += $(if ($MachineScope) { 'machine' } elseif ($UserScope) { 'user' } else { 'auto' })
 }
 $node = Ensure-Runtime 'Node' 'OpenJS.NodeJS.LTS' 'Node.js'
-$python = Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python' -UserScope
+$python = Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python' -MachineScope
 $git = Ensure-Runtime 'Git' 'Git.Git' 'Git'
 $claude = Ensure-Runtime 'Claude' 'Anthropic.ClaudeCode' 'Claude' -UserScope
 # Re-running with compatible dependencies must not install again.
 $again = Ensure-Runtime 'Node' 'OpenJS.NodeJS.LTS' 'Node.js'
-@{paths=@($node,$python,$git,$claude); packages=$script:calls} | ConvertTo-Json -Compress
+@{paths=@($node,$python,$git,$claude); packages=$script:calls; scopes=$script:scopes} | ConvertTo-Json -Compress
 """)
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
         self.assertEqual(data['paths'], ['Node.exe', 'Python.exe', 'Git.exe', 'Claude.exe'])
         self.assertEqual(data['packages'], ['OpenJS.NodeJS.LTS', 'Python.Python.3.14', 'Git.Git', 'Anthropic.ClaudeCode'])
+        self.assertEqual(data['scopes'], ['auto', 'machine', 'auto', 'user'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows bootstrap tests')
     def test_incompatible_executables_do_not_hide_a_supported_runtime(self):
@@ -403,6 +405,90 @@ try { Invoke-Checked 'FIXTURE' @() 'Install Python' } catch {
         self.assertFalse(data['blocked'])
         self.assertIn('fixture network failure', data['message'])
         self.assertNotIn('Windows blocked this installation by policy', data['message'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows machine Python selection')
+    def test_machine_python_is_selected_instead_of_a_user_installation(self):
+        result = self.run_powershell("""
+function Get-RuntimeCandidates { 'user-python.exe' }
+function Get-MachinePythonCandidates { @('old-system-python.exe','system-python.exe') }
+function Test-Runtime { param($Kind,$Executable) $Executable -ne 'old-system-python.exe' }
+Find-Runtime 'Python' -MachineScope
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'system-python.exe')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows machine Python installation')
+    def test_existing_user_python_does_not_satisfy_machine_installation(self):
+        result = self.run_powershell("""
+$script:installed = $false
+function Get-RuntimeCandidates { 'user-python.exe' }
+function Get-MachinePythonCandidates { if ($script:installed) { 'system-python.exe' } }
+function Test-Runtime { $true }
+function Install-WinGetPackage {
+    param($PackageId,$DisplayName,[switch]$UserScope,[switch]$MachineScope)
+    if ($UserScope -or -not $MachineScope) { throw 'WRONG INSTALLATION SCOPE' }
+    $script:installed = $true
+}
+Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python (all users)' -MachineScope
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'system-python.exe')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows machine Python WinGet arguments')
+    def test_python_installation_explicitly_selects_machine_scope(self):
+        result = self.run_powershell("""
+function Ensure-WinGet { 'fixture-winget.exe' }
+function Refresh-ProcessPath {}
+function Invoke-Checked { param($Executable,$Arguments,$Label) $script:arguments=$Arguments }
+Install-WinGetPackage 'Python.Python.3.14' 'Python (all users)' -MachineScope
+ConvertTo-Json -InputObject $script:arguments -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(args[args.index('--scope') + 1], 'machine')
+        self.assertEqual(args[args.index('--id') + 1], 'Python.Python.3.14')
+        self.assertNotIn('user', args)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows machine Python CheckOnly')
+    def test_machine_python_check_only_does_not_install_when_only_user_python_exists(self):
+        result = self.run_powershell("""
+function Get-RuntimeCandidates { 'user-python.exe' }
+function Get-MachinePythonCandidates {}
+function Test-Runtime { $true }
+function Install-WinGetPackage { throw 'UNEXPECTED INSTALL' }
+Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python (all users)' -MachineScope -CheckOnly
+""")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Python (all users) is required', result.stderr)
+        self.assertNotIn('UNEXPECTED', result.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows machine Python registry discovery')
+    def test_machine_python_in_custom_directory_is_found_via_hklm_registration(self):
+        executable = self.root / 'system python' / 'python.exe'
+        executable.parent.mkdir()
+        executable.touch()
+        result = self.run_powershell(r"""
+$script:fixtureExecutable = 'FIXTURE'
+function Get-ChildItem {
+    param($LiteralPath,$Path,[switch]$Directory)
+    if ($LiteralPath -eq 'HKLM:\SOFTWARE\Python\PythonCore') {
+        @{PSChildName='3.14';PSPath='Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Python\PythonCore\3.14'}
+    }
+}
+function Get-Item {
+    param($LiteralPath)
+    $key = New-Object PSObject
+    $key | Add-Member ScriptMethod GetValue {
+        param($Name)
+        if ($Name -eq 'ExecutablePath') { $script:fixtureExecutable }
+        if ($Name -eq '') { Split-Path $script:fixtureExecutable -Parent }
+    }
+    $key
+}
+ConvertTo-Json -InputObject @(Get-MachinePythonCandidates) -Compress
+""".replace('FIXTURE', str(executable).replace("'", "''")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.strip()), [str(executable)])
 
 
 if __name__ == '__main__':

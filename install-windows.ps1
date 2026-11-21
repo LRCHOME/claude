@@ -89,8 +89,31 @@ function Test-Runtime([string]$Kind, [string]$Executable) {
     finally { $ErrorActionPreference = $previousPreference }
 }
 
-function Find-Runtime([string]$Kind) {
-    foreach ($candidate in @(Get-RuntimeCandidates $Kind)) {
+function Get-MachinePythonCandidates {
+    # PEP 514 registrations cover machine installations in custom directories.
+    $paths = @()
+    foreach ($root in @('HKLM:\SOFTWARE\Python\PythonCore', 'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore')) {
+        foreach ($versionKey in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | Sort-Object PSChildName -Descending)) {
+            $key = Get-Item -LiteralPath (Join-Path $versionKey.PSPath 'InstallPath') -ErrorAction SilentlyContinue
+            if ($key) {
+                $paths += $key.GetValue('ExecutablePath')
+                $directory = $key.GetValue('')
+                if ($directory) { $paths += Join-Path $directory 'python.exe' }
+            }
+        }
+    }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }) {
+        $paths += @(Get-ChildItem -Path (Join-Path $root 'Python*') -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName 'python.exe' })
+    }
+    foreach ($candidate in ($paths | Where-Object { $_ } | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
+    }
+}
+
+function Find-Runtime([string]$Kind, [switch]$MachineScope) {
+    $candidates = if ($Kind -eq 'Python' -and $MachineScope) { @(Get-MachinePythonCandidates) } else { @(Get-RuntimeCandidates $Kind) }
+    foreach ($candidate in $candidates) {
         if (Test-Runtime $Kind $candidate) { return $candidate }
     }
     return $null
@@ -227,22 +250,25 @@ function Ensure-WinGet([switch]$CheckOnly) {
     throw 'WinGet repair finished but no working WinGet >=1.8 was found for this user. Restart Windows if requested and retry. Administrator-only repair: powershell -NoProfile -File .\install-windows.ps1 -RepairWinGetAllUsers'
 }
 
-function Install-WinGetPackage([string]$PackageId, [string]$DisplayName, [switch]$UserScope) {
+function Install-WinGetPackage([string]$PackageId, [string]$DisplayName, [switch]$UserScope, [switch]$MachineScope) {
+    if ($UserScope -and $MachineScope) { throw 'Choose either user or machine installation scope.' }
     $winget = Ensure-WinGet
     Write-Host ('Installing ' + $DisplayName + ' using WinGet...')
     $arguments = @('install', '--id', $PackageId, '--exact', '--source', 'winget', '--silent',
                    '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')
     if ($UserScope) { $arguments += @('--scope', 'user') }
+    if ($MachineScope) { $arguments += @('--scope', 'machine') }
     Invoke-Checked $winget $arguments ('Install ' + $DisplayName)
     Refresh-ProcessPath
 }
 
-function Ensure-Runtime([string]$Kind, [string]$PackageId, [string]$DisplayName, [switch]$CheckOnly, [switch]$UserScope) {
-    $runtime = Find-Runtime $Kind
+function Ensure-Runtime([string]$Kind, [string]$PackageId, [string]$DisplayName, [switch]$CheckOnly, [switch]$UserScope, [switch]$MachineScope) {
+    if ($UserScope -and $MachineScope) { throw 'Choose either user or machine installation scope.' }
+    $runtime = Find-Runtime $Kind -MachineScope:$MachineScope
     if ($runtime) { return $runtime }
     if ($CheckOnly) { throw ($DisplayName + ' is required. Run install-windows.ps1 without -CheckOnly to install it.') }
-    Install-WinGetPackage $PackageId $DisplayName -UserScope:$UserScope
-    $runtime = Find-Runtime $Kind
+    Install-WinGetPackage $PackageId $DisplayName -UserScope:$UserScope -MachineScope:$MachineScope
+    $runtime = Find-Runtime $Kind -MachineScope:$MachineScope
     if (-not $runtime) { throw ($DisplayName + ' was installed but a compatible executable is not available. Restart Windows if requested by the installer, then run install-windows.ps1 again.') }
     return $runtime
 }
@@ -273,7 +299,7 @@ foreach ($name in @('gpt_claude', 'ai_claude', 'ds_claude')) {
 Refresh-ProcessPath
 # Bootstrap WinGet lazily, only when a missing runtime actually needs installing.
 $node = Ensure-Runtime 'Node' 'OpenJS.NodeJS.LTS' 'Node.js >=20.18.1 with npm' -CheckOnly:$CheckOnly
-$python = Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python >=3.10' -CheckOnly:$CheckOnly -UserScope
+$python = Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python >=3.10 (all users)' -CheckOnly:$CheckOnly -MachineScope
 $git = Ensure-Runtime 'Git' 'Git.Git' 'Git for Windows' -CheckOnly:$CheckOnly
 $claude = Ensure-Runtime 'Claude' 'Anthropic.ClaudeCode' 'Native Claude Code' -CheckOnly:$CheckOnly -UserScope
 # Use the validated programs even if this terminal still has an older version first.
