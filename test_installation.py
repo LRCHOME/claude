@@ -54,7 +54,7 @@ syncBuiltinESMExports();
         installer = str(ROOT / 'install-windows.ps1').replace("'", "''")
         script.write_text(". '" + installer + "'\n" + body, encoding='utf-8-sig')
         result = subprocess.run([str(powershell), '-NoProfile', '-File', str(script)],
-                                text=True, capture_output=True, timeout=20)
+                                text=True, encoding='utf-8', capture_output=True, timeout=20)
         if 'running scripts is disabled' in ' '.join(result.stderr.split()) or 'PSSecurityException' in result.stderr:
             self.skipTest('Local execution policy disallows PowerShell test scripts')
         return result
@@ -356,6 +356,53 @@ Install-WinGetClient -AllUsers
         data = json.loads(result.stdout.strip().splitlines()[-1])
         self.assertEqual(data['repairs'], [{'allusers': False, 'latest': True, 'force': True}, {'allusers': True, 'latest': True, 'force': True}])
         self.assertTrue(data['tlsRestored'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native UTF-8 output')
+    def test_utf8_native_failure_is_readable_and_restores_console_encoding(self):
+        message = '\u0423\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0430 \u0437\u0430\u043f\u0440\u0435\u0449\u0435\u043d\u0430 \u043f\u043e\u043b\u0438\u0442\u0438\u043a\u043e\u0439.'
+        fixture = self.root / 'utf8-policy.cjs'
+        fixture.write_text('process.stdout.write(Buffer.from(' + json.dumps(list(message.encode('utf-8'))) +
+                           ')); process.exit(-1978334961);', encoding='ascii')
+        body = """
+[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(866)
+$OutputEncoding = [Text.Encoding]::ASCII
+try {
+    Invoke-Checked (Get-Command node.exe).Source @('FIXTURE') 'Install Python'
+    throw 'UNEXPECTED SUCCESS'
+} catch {
+    $result = @{message=$_.Exception.Message;code=$_.Exception.Data['NativeExitCode'];
+                blocked=$_.Exception.Data['PolicyBlocked'];console=[Console]::OutputEncoding.CodePage;
+                pipeline=$OutputEncoding.CodePage;preference=[string]$ErrorActionPreference}
+}
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+$result | ConvertTo-Json -Compress
+""".replace('FIXTURE', str(fixture).replace("'", "''"))
+        result = self.run_powershell(body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn(message, data['message'])
+        self.assertIn('Windows blocked this installation by policy', data['message'])
+        self.assertEqual(data['code'], -1978334961)
+        self.assertTrue(data['blocked'])
+        self.assertEqual(data['console'], 866)
+        self.assertEqual(data['pipeline'], 20127)
+        self.assertEqual(data['preference'], 'Stop')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native exit codes')
+    def test_unrelated_native_error_is_not_reported_as_a_policy_block(self):
+        fixture = self.root / 'ordinary-error.cmd'
+        fixture.write_text('@echo off\necho fixture network failure\nexit /b 7\n', encoding='ascii')
+        result = self.run_powershell("""
+try { Invoke-Checked 'FIXTURE' @() 'Install Python' } catch {
+    @{message=$_.Exception.Message;code=$_.Exception.Data['NativeExitCode'];blocked=$_.Exception.Data['PolicyBlocked']} | ConvertTo-Json -Compress
+}
+""".replace('FIXTURE', str(fixture).replace("'", "''")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['code'], 7)
+        self.assertFalse(data['blocked'])
+        self.assertIn('fixture network failure', data['message'])
+        self.assertNotIn('Windows blocked this installation by policy', data['message'])
 
 
 if __name__ == '__main__':

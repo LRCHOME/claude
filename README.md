@@ -111,6 +111,26 @@ powershell -NoProfile -File .\install-windows.ps1 -RepairWinGetAllUsers
 первоначального пользователя. Если UAC отклонён или восстановление не удалось,
 установщик остановится и покажет исходную ошибку и результат повторной попытки.
 
+Если Python или другая программа не устанавливается с **1625** или WinGet
+**-1978334961 / 0x8A15010F**, Windows запрещает установку политикой.
+[Описание кода Microsoft](https://learn.microsoft.com/en-us/windows/win32/msi/error-codes).
+Установщик покажет понятную причину, сохранит исходный вывод и остановит установку.
+Вывод WinGet читается как UTF-8, в том числе в Windows PowerShell 5.1.
+
+Для уточнения причины нужен журнал, путь к которому напечатан в ошибке.
+Например, последние 80 строк последнего основного журнала Python можно получить так:
+
+```powershell
+$logDirectory = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir'
+$pythonLog = Get-ChildItem -LiteralPath $logDirectory -Filter 'Python.Python.*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($pythonLog) { Get-Content -LiteralPath $pythonLog.FullName -Tail 80 }
+```
+
+По одному коду нельзя определить, запрещён ли весь Python, отдельный компонент
+или установка для текущего пользователя. Передайте журнал администратору компьютера,
+чтобы он разрешил подходящий способ установки. После установки разрешённого
+Python >=3.10 повторите запуск `install-windows.ps1`: он обнаружит готовый Python.
+
 Если раньше установка завершалась `gpt_claude --version failed: 1`, обновите
 репозиторий и повторите установку. Теперь `--version` и `--help` передаются
 нативному Claude без загрузки GPT-модулей, npm-зависимостей или авторизации.

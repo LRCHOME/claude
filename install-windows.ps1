@@ -12,13 +12,32 @@ function Require-Command([string]$Name, [string]$HelpText) {
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$Label) {
     $previousPreference = $ErrorActionPreference
+    $previousConsoleEncoding = [Console]::OutputEncoding
+    $previousOutputEncoding = $OutputEncoding
     try {
+        # WinGet writes UTF-8 to redirected stdout, while Windows PowerShell 5.1
+        # otherwise decodes it with the console's OEM code page (e.g. CP866).
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [Console]::OutputEncoding = $utf8
+        $OutputEncoding = $utf8
         $ErrorActionPreference = 'Continue'
         $output = @(& $Executable @Arguments 2>&1)
         $exitCode = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $previousPreference }
+    } finally {
+        [Console]::OutputEncoding = $previousConsoleEncoding
+        $OutputEncoding = $previousOutputEncoding
+        $ErrorActionPreference = $previousPreference
+    }
     if ($exitCode -ne 0) {
-        throw ('{0} failed (exit {1}). Original output:{2}{3}' -f $Label, $exitCode, [Environment]::NewLine, ($output -join [Environment]::NewLine))
+        $policyBlocked = $exitCode -in @(-1978334961, 1625, -2147023271)
+        $explanation = if ($policyBlocked) {
+            ' Windows blocked this installation by policy (MSI 1625 / WinGet 0x8A15010F). Ask the device administrator to inspect the installer log below and approve an allowed installation method. Automatic retries stopped.'
+        } else { '' }
+        $message = '{0} failed (exit {1}).{2} Original output:{3}{4}' -f $Label, $exitCode, $explanation, [Environment]::NewLine, ($output -join [Environment]::NewLine)
+        $failure = New-Object System.InvalidOperationException($message)
+        $failure.Data['NativeExitCode'] = $exitCode
+        $failure.Data['PolicyBlocked'] = $policyBlocked
+        throw $failure
     }
     foreach ($line in $output) { Write-Host $line }
 }
