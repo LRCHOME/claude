@@ -1,7 +1,8 @@
-param([switch]$CheckOnly)
+param([switch]$CheckOnly, [switch]$RepairWinGetAllUsers, [string]$WinGetRepairResult)
 
 $ErrorActionPreference = 'Stop'
 $binDirectory = Join-Path $PSScriptRoot 'bin'
+$installerScript = $PSCommandPath
 
 function Require-Command([string]$Name, [string]$HelpText) {
     $command = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -119,7 +120,15 @@ function Register-WinGet {
     }
 }
 
-function Install-WinGetClient {
+function Test-InstallerAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } finally { $identity.Dispose() }
+}
+
+function Install-WinGetClient([switch]$AllUsers) {
     Write-Host 'Installing WinGet using the Microsoft.WinGet.Client module from PowerShell Gallery...'
     $previousProtocol = [Net.ServicePointManager]::SecurityProtocol
     try {
@@ -140,8 +149,33 @@ function Install-WinGetClient {
         # Import only repair: the module also exports Install-WinGetPackage,
         # which must not replace this installer's dependency wrapper.
         Import-Module Microsoft.WinGet.Client -Cmdlet Repair-WinGetPackageManager -Function @() -Alias @() -ErrorAction Stop
-        Repair-WinGetPackageManager -Latest -Force -ErrorAction Stop | Out-Null
+        $repairArguments = @{ Latest = $true; Force = $true; ErrorAction = 'Stop' }
+        if ($AllUsers) { $repairArguments.AllUsers = $true }
+        Repair-WinGetPackageManager @repairArguments | Out-Null
     } finally { [Net.ServicePointManager]::SecurityProtocol = $previousProtocol }
+}
+
+function Invoke-ElevatedWinGetRepair {
+    # Only WinGet repair runs elevated. Runtime installs, provider files and PATH
+    # remain in the original user's process, even with different UAC credentials.
+    $resultFile = [IO.Path]::GetTempFileName()
+    try {
+        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $arguments = @('-NoProfile', '-File', ('"{0}"' -f $installerScript),
+                       '-RepairWinGetAllUsers', '-WinGetRepairResult', ('"{0}"' -f $resultFile))
+        Write-Host 'WinGet requires administrator repair. Approve the Windows UAC prompt to continue...'
+        try {
+            $process = Start-Process -FilePath $powershell -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+        } catch { throw ('Could not start administrator WinGet repair (UAC may have been cancelled): ' + $_.Exception.Message) }
+        $result = $null
+        if ((Get-Item -LiteralPath $resultFile).Length) {
+            $result = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        if ($process.ExitCode -ne 0 -or -not $result -or -not $result.ok) {
+            $detail = if ($result -and $result.message) { $result.message } else { 'No repair result was returned. Check PowerShell policy and the UAC prompt.' }
+            throw ('Administrator WinGet repair failed (exit {0}): {1}' -f $process.ExitCode, $detail)
+        }
+    } finally { Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue }
 }
 
 function Ensure-WinGet([switch]$CheckOnly) {
@@ -152,12 +186,26 @@ function Ensure-WinGet([switch]$CheckOnly) {
     Refresh-ProcessPath
     $winget = Find-WinGet
     if ($winget) { return $winget }
-    try { Install-WinGetClient }
-    catch { throw ('WinGet bootstrap failed: ' + $_.Exception.Message + ' Check your connection and Windows App Installer policy, then retry. Manual installer: https://aka.ms/getwinget') }
+    $administrator = Test-InstallerAdministrator
+    $repairFailure = $null
+    try { Install-WinGetClient -AllUsers:$administrator }
+    catch { $repairFailure = $_.Exception.Message }
     Refresh-ProcessPath
     $winget = Find-WinGet
-    if (-not $winget) { throw 'WinGet bootstrap finished but no working WinGet >=1.8 was found. Restart Windows if requested, then run install-windows.ps1 again.' }
-    return $winget
+    # Some module failures concern COM registration after a usable CLI was installed.
+    if ($winget) { return $winget }
+    if ($repairFailure -and -not $administrator -and $repairFailure -match 'AllUsers|administrator mode') {
+        Write-Host ('Current-user WinGet repair failed: ' + $repairFailure)
+        try { Invoke-ElevatedWinGetRepair }
+        catch { throw ('WinGet bootstrap failed. Initial error: ' + $repairFailure + ' Administrator retry: ' + $_.Exception.Message) }
+        Register-WinGet
+        Refresh-ProcessPath
+        $winget = Find-WinGet
+        if ($winget) { return $winget }
+    } elseif ($repairFailure) {
+        throw ('WinGet bootstrap failed: ' + $repairFailure + ' Check connectivity and App Installer policy. Manual installer: https://aka.ms/getwinget')
+    }
+    throw 'WinGet repair finished but no working WinGet >=1.8 was found for this user. Restart Windows if requested and retry. Administrator-only repair: powershell -NoProfile -File .\install-windows.ps1 -RepairWinGetAllUsers'
 }
 
 function Install-WinGetPackage([string]$PackageId, [string]$DisplayName, [switch]$UserScope) {
@@ -183,11 +231,28 @@ function Ensure-Runtime([string]$Kind, [string]$PackageId, [string]$DisplayName,
 # Dot-sourcing exposes the dependency checks for offline tests; it installs nothing.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
+if ($RepairWinGetAllUsers) {
+    try {
+        if ($CheckOnly) { throw '-CheckOnly cannot be combined with -RepairWinGetAllUsers.' }
+        if (-not (Test-InstallerAdministrator)) { throw '-RepairWinGetAllUsers must run in an administrator PowerShell window.' }
+        Install-WinGetClient -AllUsers
+        if ($WinGetRepairResult) {
+            @{ok=$true} | ConvertTo-Json -Compress | Set-Content -LiteralPath $WinGetRepairResult -Encoding UTF8
+        }
+    } catch {
+        if ($WinGetRepairResult) {
+            @{ok=$false;message=$_.Exception.Message} | ConvertTo-Json -Compress | Set-Content -LiteralPath $WinGetRepairResult -Encoding UTF8
+        }
+        throw
+    }
+    return
+}
+
 foreach ($name in @('gpt_claude', 'ai_claude', 'ds_claude')) {
     if (-not (Test-Path -LiteralPath (Join-Path $binDirectory "$name.cmd"))) { throw "Missing launcher: $name.cmd" }
 }
 Refresh-ProcessPath
-$winget = Ensure-WinGet -CheckOnly:$CheckOnly
+# Bootstrap WinGet lazily, only when a missing runtime actually needs installing.
 $node = Ensure-Runtime 'Node' 'OpenJS.NodeJS.LTS' 'Node.js >=20.18.1 with npm' -CheckOnly:$CheckOnly
 $python = Ensure-Runtime 'Python' 'Python.Python.3.14' 'Python >=3.10' -CheckOnly:$CheckOnly -UserScope
 $git = Ensure-Runtime 'Git' 'Git.Git' 'Git for Windows' -CheckOnly:$CheckOnly

@@ -211,6 +211,152 @@ Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {'old': False, 'good': True, 'broken': False})
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet repair fallback')
+    def test_allusers_error_retries_elevated_and_registers_original_user(self):
+        result = self.run_powershell("""
+$script:steps = @(); $script:repaired = $false
+function Find-WinGet { if ($script:repaired) { 'repaired-winget.exe' } }
+function Test-InstallerAdministrator { $false }
+function Register-WinGet { $script:steps += 'register-original-user' }
+function Refresh-ProcessPath {}
+function Install-WinGetClient {
+    param([switch]$AllUsers)
+    $script:steps += ('repair-allusers:' + [bool]$AllUsers)
+    throw 'Failed to repair winget. Try running with -AllUsers in administrator mode.'
+}
+function Invoke-ElevatedWinGetRepair { $script:steps += 'uac'; $script:repaired = $true }
+$path = Ensure-WinGet
+@{path=$path; steps=$script:steps} | ConvertTo-Json -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['path'], 'repaired-winget.exe')
+        self.assertEqual(data['steps'], ['register-original-user', 'repair-allusers:False', 'uac', 'register-original-user'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet repair fallback')
+    def test_administrator_uses_allusers_without_starting_another_uac_process(self):
+        result = self.run_powershell("""
+$script:repaired = $false
+function Find-WinGet { if ($script:repaired) { 'admin-winget.exe' } }
+function Test-InstallerAdministrator { $true }
+function Register-WinGet {}
+function Refresh-ProcessPath {}
+function Invoke-ElevatedWinGetRepair { throw 'UNEXPECTED UAC' }
+function Install-WinGetClient {
+    param([switch]$AllUsers)
+    if (-not $AllUsers) { throw 'ALLUSERS MISSING' }
+    $script:repaired = $true
+}
+Ensure-WinGet
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'admin-winget.exe')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet repair fallback')
+    def test_connectivity_error_does_not_request_unnecessary_elevation(self):
+        result = self.run_powershell("""
+function Find-WinGet {}
+function Test-InstallerAdministrator { $false }
+function Register-WinGet {}
+function Refresh-ProcessPath {}
+function Install-WinGetClient { throw 'fixture TLS connection failed' }
+function Invoke-ElevatedWinGetRepair { throw 'UNEXPECTED UAC' }
+Ensure-WinGet
+""")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('fixture TLS connection failed', result.stderr)
+        self.assertNotIn('UNEXPECTED', result.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet repair fallback')
+    def test_usable_cli_after_partial_repair_failure_does_not_request_elevation(self):
+        result = self.run_powershell("""
+$script:repaired = $false
+function Find-WinGet { if ($script:repaired) { 'usable-winget.exe' } }
+function Test-InstallerAdministrator { $false }
+function Register-WinGet {}
+function Refresh-ProcessPath {}
+function Install-WinGetClient { $script:repaired = $true; throw 'COM repair needs -AllUsers' }
+function Invoke-ElevatedWinGetRepair { throw 'UNEXPECTED UAC' }
+Ensure-WinGet
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'usable-winget.exe')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet repair fallback')
+    def test_failed_administrator_retry_preserves_both_errors_and_stops_packages(self):
+        result = self.run_powershell("""
+function Find-WinGet {}
+function Test-InstallerAdministrator { $false }
+function Register-WinGet {}
+function Refresh-ProcessPath {}
+function Install-WinGetClient { throw 'initial repair requires -AllUsers' }
+function Invoke-ElevatedWinGetRepair { throw 'fixture UAC cancelled or repair failed' }
+function Invoke-Checked { throw 'UNEXPECTED PACKAGE INSTALL' }
+Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
+""")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('initial repair requires -AllUsers', result.stderr)
+        self.assertIn('fixture UAC cancelled or repair failed', result.stderr)
+        self.assertNotIn('UNEXPECTED', result.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet elevation arguments')
+    def test_elevated_worker_quotes_paths_and_only_repairs_winget(self):
+        result = self.run_powershell(r"""
+$script:installerScript = 'C:\folder with spaces\install-windows.ps1'
+function Start-Process {
+    param($FilePath,$ArgumentList,$Verb,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+    $script:captured = @{args=$ArgumentList;verb=$Verb;style=$WindowStyle;wait=[bool]$Wait}
+    $script:resultFile = $ArgumentList[-1].Trim('"')
+    '{"ok":true}' | Set-Content -LiteralPath $script:resultFile -Encoding UTF8
+    return @{ExitCode=0}
+}
+Invoke-ElevatedWinGetRepair
+$script:captured.removed = -not (Test-Path -LiteralPath $script:resultFile)
+$script:captured | ConvertTo-Json -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['verb'], 'RunAs')
+        self.assertEqual(data['style'], 'Hidden')
+        self.assertTrue(data['wait'])
+        self.assertTrue(data['removed'])
+        self.assertEqual(data['args'][:5], ['-NoProfile', '-File', '"C:\\folder with spaces\\install-windows.ps1"', '-RepairWinGetAllUsers', '-WinGetRepairResult'])
+        self.assertNotIn('-ExecutionPolicy', data['args'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet elevation result')
+    def test_elevated_worker_failure_is_not_treated_as_success(self):
+        result = self.run_powershell("""
+function Start-Process {
+    param($FilePath,$ArgumentList,$Verb,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+    '{"ok":false,"message":"fixture system repair error"}' | Set-Content -LiteralPath $ArgumentList[-1].Trim('"') -Encoding UTF8
+    return @{ExitCode=1}
+}
+Invoke-ElevatedWinGetRepair
+""")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('fixture system repair error', result.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet repair command')
+    def test_module_repair_receives_allusers_and_restores_tls_protocol(self):
+        result = self.run_powershell("""
+$script:repairs = @(); $initialProtocol = [Net.ServicePointManager]::SecurityProtocol
+function Get-PackageProvider { @{Version=[version]'3.0.0'} }
+function Get-PSRepository { @{SourceLocation='https://www.powershellgallery.com/api/v2'} }
+function Install-Module {}
+function Import-Module {}
+function Repair-WinGetPackageManager {
+    param([switch]$AllUsers,[switch]$Latest,[switch]$Force,$ErrorAction)
+    $script:repairs += @{allusers=[bool]$AllUsers;latest=[bool]$Latest;force=[bool]$Force}
+}
+Install-WinGetClient
+Install-WinGetClient -AllUsers
+@{repairs=$script:repairs; tlsRestored=([Net.ServicePointManager]::SecurityProtocol -eq $initialProtocol)} | ConvertTo-Json -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['repairs'], [{'allusers': False, 'latest': True, 'force': True}, {'allusers': True, 'latest': True, 'force': True}])
+        self.assertTrue(data['tlsRestored'])
+
 
 if __name__ == '__main__':
     unittest.main()

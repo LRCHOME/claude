@@ -49,9 +49,9 @@ npm ci
 powershell -NoProfile -File .\install-windows.ps1
 ```
 
-Установщик сначала проверит WinGet >=1.8 и при необходимости установит его.
-Затем проверит имеющиеся программы и через WinGet поставит недостающие
-или неподходящие по версии:
+Установщик проверит имеющиеся программы и через WinGet поставит недостающие
+или неподходящие по версии. WinGet >=1.8 устанавливается только при первой
+необходимости установить пакет; если все программы уже подходят, WinGet не требуется.
 
 | Компонент | Пакет WinGet |
 | --- | --- |
@@ -66,6 +66,10 @@ powershell -NoProfile -File .\install-windows.ps1
 WinGet нужен доступ к PowerShell Gallery и серверам загрузки Microsoft/GitHub;
 заранее установленный Microsoft Store не требуется. NuGet-провайдер и модуль
 `Microsoft.WinGet.Client` при необходимости устанавливаются для текущего пользователя.
+Если восстановление WinGet требует `-AllUsers`, установщик предложит UAC и повторит
+только восстановление WinGet с правами администратора. Затем App Installer снова
+регистрируется для исходного пользователя, и установка продолжается в его сеансе.
+В уже открытом окне администратора сразу применяется `Repair-WinGetPackageManager -AllUsers`.
 Если политика Windows или сеть блокирует установку WinGet, выводится причина,
 и установка остальных программ останавливается.
 Политика выполнения PowerShell не меняется и не обходится установщиком.
@@ -85,6 +89,27 @@ WinGet нужен доступ к PowerShell Gallery и серверам заг�
 ```powershell
 powershell -NoProfile -File .\install-windows.ps1 -CheckOnly
 ```
+
+Если старая версия установщика завершалась сообщением
+`Failed to repair winget. Try running with -AllUsers in administrator mode`,
+обновите репозиторий и запустите установку снова, подтвердив UAC.
+Если Git ещё отсутствует, в папке репозитория можно обновить только установщик:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/lrchome/claude/main/install-windows.ps1' -OutFile .\install-windows.ps1
+powershell -NoProfile -File .\install-windows.ps1
+```
+
+Для отдельного восстановления WinGet откройте PowerShell **от имени администратора**
+и выполните из папки репозитория:
+
+```powershell
+powershell -NoProfile -File .\install-windows.ps1 -RepairWinGetAllUsers
+```
+
+Этот режим чинит только WinGet. После него повторите обычную установку из окна
+первоначального пользователя. Если UAC отклонён или восстановление не удалось,
+установщик остановится и покажет исходную ошибку и результат повторной попытки.
 
 Если раньше установка завершалась `gpt_claude --version failed: 1`, обновите
 репозиторий и повторите установку. Теперь `--version` и `--help` передаются
