@@ -18,6 +18,7 @@ def install(root, destination):
         'gpt_claude': 'node ' + shlex.quote(str(root / 'gpt-launch.mjs')),
         'ai_claude': 'python3 ' + shlex.quote(str(root / 'launch.py')) + ' ai',
         'ds_claude': 'python3 ' + shlex.quote(str(root / 'launch.py')) + ' ds',
+        'or_claude': 'python3 ' + shlex.quote(str(root / 'launch.py')) + ' or',
     }
     for name, command in commands.items():
         descriptor, temporary = tempfile.mkstemp(prefix='.' + name + '-', dir=destination)
@@ -38,5 +39,5 @@ if __name__ == '__main__':
     parser.add_argument('--bin-dir', default=str(Path.home() / '.local' / 'bin'))
     args = parser.parse_args()
     destination = install(Path(__file__).parent, args.bin_dir)
-    print('Installed gpt_claude, ai_claude and ds_claude into ' + str(destination))
+    print('Installed gpt_claude, ai_claude, ds_claude and or_claude into ' + str(destination))
     print('Add this directory to PATH, then configure providers using README.md.')

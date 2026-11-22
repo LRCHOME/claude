@@ -2,7 +2,7 @@
   "name": "claude-provider-launchers",
   "version": "0.1.0",
   "private": true,
-  "description": "Launch Claude Code with ChatGPT plan, DeepSeek or an Anthropic-compatible endpoint.",
+  "description": "Launch Claude Code with ChatGPT plan, DeepSeek, OpenRouter or an Anthropic-compatible endpoint.",
   "engines": {
     "node": ">=20.18.1"
   },

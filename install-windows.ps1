@@ -293,7 +293,7 @@ if ($RepairWinGetAllUsers) {
     return
 }
 
-foreach ($name in @('gpt_claude', 'ai_claude', 'ds_claude')) {
+foreach ($name in @('gpt_claude', 'ai_claude', 'ds_claude', 'or_claude')) {
     if (-not (Test-Path -LiteralPath (Join-Path $binDirectory "$name.cmd"))) { throw "Missing launcher: $name.cmd" }
 }
 Refresh-ProcessPath
@@ -329,7 +329,7 @@ try {
 
 Push-Location $env:TEMP
 try {
-    foreach ($name in @('gpt_claude', 'ai_claude', 'ds_claude')) {
+    foreach ($name in @('gpt_claude', 'ai_claude', 'ds_claude', 'or_claude')) {
         # Explicit paths avoid selecting an older launcher in PATH.
         Invoke-Checked (Join-Path $binDirectory "$name.cmd") @('--version') "$name --version"
     }
@@ -355,6 +355,6 @@ public static class ClaudeLauncherEnvironment {
 }
 $broadcastResult = [UIntPtr]::Zero
 [void][ClaudeLauncherEnvironment]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$broadcastResult)
-Get-Command gpt_claude, ai_claude, ds_claude | Select-Object Name, Source
+Get-Command gpt_claude, ai_claude, ds_claude, or_claude | Select-Object Name, Source
 Write-Host 'Launchers installed. Open a new terminal and configure providers using README.md.'
 Write-Host 'DeepSeek on a fresh installation: set DEEPSEEK_API_KEY, then run ds_claude.'

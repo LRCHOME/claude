@@ -30,6 +30,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```sh
 gpt_claude --version
 ds_claude --version
+or_claude --version
 ai_claude --version
 ```
 
@@ -80,10 +81,11 @@ export AI_CLAUDE_API_KEY='YOUR_AI_KEY'
 
 Если уже используете OpenCode, можно добавить providers из примера в существующий
 `~/.config/opencode/opencode.json` и не задавать `OPENCODE_CONFIG`.
-Подробности формата и альтернативы pi: [README.md](README.md#настройка-ds_claude-и-ai_claude).
+Подробности формата и альтернативы pi: [README.md](README.md#настройка-ds_claude-or_claude-и-ai_claude).
 
 ```sh
 ds_claude --launcher-info
+or_claude --launcher-info
 ai_claude --launcher-info
 ```
 
@@ -94,6 +96,7 @@ cd /path/to/your/project
 gpt_claude
 # Или другая команда:
 ds_claude
+or_claude
 ai_claude
 ```
 

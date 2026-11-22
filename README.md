@@ -1,16 +1,17 @@
 # Claude provider launchers
 
-Три команды для запуска установленного Claude Code с другим провайдером:
+Четыре команды для запуска установленного Claude Code с другим провайдером:
 
 | Команда | Подключение | Что требуется от пользователя |
 | --- | --- | --- |
 | `gpt_claude` | Claude Code → локальный адаптер → OpenAI Responses API | Своя подписка ChatGPT с доступом к Sign in with ChatGPT / token sharing |
 | `ds_claude` | Claude Code → DeepSeek напрямую | Свой API-ключ DeepSeek |
+| `or_claude` | Claude Code → OpenRouter напрямую | Свой API-ключ OpenRouter и выбранная модель |
 | `ai_claude` | Claude Code → ваш Anthropic-совместимый endpoint напрямую | URL сервера, API-ключ и ID модели |
 
 Лаунчеры сохраняют текущую рабочую папку, передают аргументы Claude Code и задают
-провайдера только дочернему процессу. `ds_claude` и `ai_claude` работают напрямую,
-без GPT-адаптера. Глобальные настройки Claude не переписываются.
+провайдера только дочернему процессу. `ds_claude`, `or_claude` и `ai_claude`
+работают напрямую, без GPT-адаптера. Глобальные настройки Claude не переписываются.
 
 Это сторонняя интеграция. Совместимость с новыми версиями Claude Code и моделями
 нужно проверять; наличие подписки ChatGPT само по себе не гарантирует доступ
@@ -21,7 +22,7 @@
 - Установленный нативный Claude Code: команда `claude` на macOS/Linux,
   `claude.exe` на Windows.
 - Node.js **20.18.1 или новее** и npm для `gpt_claude`.
-- Python **3.10 или новее** для `ds_claude`, `ai_claude` и установщика macOS/Linux.
+- Python **3.10 или новее** для `ds_claude`, `or_claude`, `ai_claude` и установщика macOS/Linux.
 - Git для клонирования репозитория.
 
 На Windows 10/11 зависимости ниже может поставить `install-windows.ps1`.
@@ -38,7 +39,7 @@ cd claude
 npm ci
 ```
 
-Для использования только `ds_claude` и `ai_claude` установка Node.js-зависимостей
+Для использования только `ds_claude`, `or_claude` и `ai_claude` установка Node.js-зависимостей
 не требуется. Их Windows-обёртки используют команду `python`, Unix-обёртки — `python3`.
 
 ## Установка команд на Windows
@@ -147,6 +148,7 @@ if ($pythonLog) { Get-Content -LiteralPath $pythonLog.FullName -Tail 80 }
 ```powershell
 .\bin\gpt_claude.cmd --version
 .\bin\ds_claude.cmd --version
+.\bin\or_claude.cmd --version
 .\bin\ai_claude.cmd --version
 ```
 
@@ -212,7 +214,7 @@ GPT_CLAUDE_MODEL=gpt-6.2-sol GPT_CLAUDE_EFFORT=medium gpt_claude
 явную передачу уровня в API. Выбор через `GPT_CLAUDE_EFFORT` относится к адаптеру;
 нативная команда `/effort` Claude не заменяет эту переменную.
 
-## Настройка ds_claude и ai_claude
+## Настройка ds_claude, or_claude и ai_claude
 
 Если нужен только DeepSeek на новом компьютере, файл OpenCode не обязателен:
 при отсутствии стандартного `~/.config/opencode/opencode.json` достаточно задать
@@ -268,6 +270,7 @@ chmod 600 "$OPENCODE_CONFIG"
 | Где | Что вставить |
 | --- | --- |
 | Переменная `DEEPSEEK_API_KEY` | Ваш API-ключ DeepSeek; для запуска только GPT или AI не нужен |
+| Переменная `OPENROUTER_API_KEY` | Ваш API-ключ OpenRouter; нужен только `or_claude` |
 | Переменная `AI_CLAUDE_BASE_URL` | URL вашего Anthropic-совместимого сервера, например `https://provider.example` |
 | Переменная `AI_CLAUDE_API_KEY` | Ваш ключ этого сервера |
 | `provider.ai-lrcs.models.local.id` в скопированном JSON | Замените `YOUR_MODEL_ID` на настоящий ID модели сервера |
@@ -307,6 +310,13 @@ ID в своём аккаунте; при необходимости измен�
 Если обновляете старую конфигурацию, добавьте запись `deepseek-flash`
 в `provider.deepseek.models`, как в [примере](examples/opencode.json).
 
+`or_claude` использует provider `openrouter` и Anthropic-совместимый endpoint
+`https://openrouter.ai/api`. Модель задаётся командой `or_claude --setmodel <id>`
+или переменной `OR_CLAUDE_MODEL`: без явного выбора лаунчер не запускается,
+чтобы не отправлять задачи случайной модели. ID берите из `or_claude --listmodels`.
+Если каталог моделей отвечает HTTP 403, доступ к `openrouter.ai` блокирует сеть
+или прокси, а не обязательно ключ.
+
 `ai_claude` использует provider с историческим именем `ai-lrcs` и модель
 с ключом `local`. Значения `baseURL` и `id` настраиваются пользователем;
 название provider в конфигурации оставьте таким, как в примере.
@@ -320,10 +330,36 @@ ID в своём аккаунте; при необходимости измен�
 В pi-варианте ищется модель с `id: "local"`; для произвольного ID модели
 используйте основной OpenCode-формат с отдельным полем `id`.
 
-### 3. Проверьте и запустите
+### 3. Ключ, модели и выбор модели
+
+`ds_claude` и `or_claude` хранят ключ и выбранную модель сами:
+
+```sh
+ds_claude --setkey           # скрытый ввод; ключ пишется в provider.deepseek.options.apiKey
+or_claude --setkey           # то же для provider.openrouter
+ds_claude --listmodels        # модели провайдера, текущая помечена звёздочкой
+or_claude --listmodels claude # фильтр по подстроке
+ds_claude --setmodel deepseek-v4-pro
+```
+
+`--setkey` пишет ключ в файл из `OPENCODE_CONFIG` или в `~/.config/opencode/opencode.json`,
+создавая файл при необходимости, и сохраняет остальные настройки. Если сервер
+отвечает HTTP 401, ключ не сохраняется. Для скриптов есть `--setkey --stdin`
+(ключ из stdin) и `--setkey --from-env` (из `DEEPSEEK_API_KEY`/`OPENROUTER_API_KEY`).
+Ключ не передаётся аргументом командной строки и не печатается.
+
+Выбранная модель хранится отдельно, в `~/.config/claude-launchers/state.json`
+(или `CLAUDE_LAUNCHERS_STATE`), и не меняет модель OpenCode. `--setmodel` сверяет
+ID со списком провайдера и подсказывает похожие, `--force` сохраняет всё равно.
+Переменные `DS_CLAUDE_MODEL` и `OR_CLAUDE_MODEL` перекрывают сохранённый выбор
+в текущем терминале. Если сервер моделей недоступен, `--listmodels` показывает
+модели из конфигурации.
+
+### 4. Проверьте и запустите
 
 ```sh
 ds_claude --launcher-info
+or_claude --launcher-info
 ai_claude --launcher-info
 ```
 
@@ -332,6 +368,7 @@ ai_claude --launcher-info
 
 ```sh
 ds_claude
+or_claude
 ai_claude
 ```
 
@@ -425,7 +462,7 @@ reasoning, аргументы и результаты инструментов, 
 После изменения кода или переменных окружения перезапустите лаунчер.
 Если задача остановилась окончательно, автоматического возобновления всей
 задачи нет: восстановите сессию через `--resume` и проверьте состояние инструментов.
-Обработка сбоев у прямых `ds_claude` и `ai_claude` остаётся на стороне Claude Code
+Обработка сбоев у прямых `ds_claude`, `or_claude` и `ai_claude` остаётся на стороне Claude Code
 и провайдера; параметры `GPT_CLAUDE_*` к ним не относятся.
 
 ## Сеть
@@ -492,12 +529,14 @@ macOS-установщик проверяется автоматически н�
 - Автоматический классификатор разрешений Claude остаётся активным на клиенте;
   это не серверный классификатор Anthropic и не гарантия одинаковых решений.
 - В исходниках также сохранён вспомогательный `local_adapter.py` для нормализации
-  system-блоков локального сервера. Три основные команды его не используют.
+  system-блоков локального сервера. Основные команды его не используют.
 
 ## Документация провайдеров
 
 - [Sign in with ChatGPT: модели и inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 - [DeepSeek: Claude Code](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)
+- [OpenRouter: модели и ключи](https://openrouter.ai/docs/quickstart)
+- [OpenRouter: Anthropic-совместимый API](https://openrouter.ai/docs/api-reference/overview)
 - [Claude: настройка моделей](https://code.claude.com/docs/en/model-config)
 - [Claude: ошибки API](https://platform.claude.com/docs/en/api/errors)
 

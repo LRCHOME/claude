@@ -11,6 +11,12 @@
         }
       }
     },
+    "openrouter": {
+      "options": {
+        "baseURL": "https://openrouter.ai/api/v1",
+        "apiKey": "{env:OPENROUTER_API_KEY}"
+      }
+    },
     "ai-lrcs": {
       "options": {
         "baseURL": "{env:AI_CLAUDE_BASE_URL}",
