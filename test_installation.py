@@ -298,16 +298,77 @@ $script:captured | ConvertTo-Json -Compress
 
     @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
     def test_claude_fallback_uses_the_official_install_script(self):
+        directory = str(self.root).replace("'", "''")
         result = self.run_powershell("""
 $script:calls = @()
-function Save-Download { param($Url, $Destination) $script:calls += $Url }
+function Save-Download {
+    param($Url, $Destination)
+    $script:calls += $Url
+    'param() # fixture claude installer' | Set-Content -LiteralPath $Destination -Encoding ASCII
+}
 function Invoke-Checked { param($Executable, $Arguments, $Label) $script:calls += $Label }
-Install-ClaudeNative 'FIXTUREDIR'
-$script:calls | ConvertTo-Json -Compress
-""")
+Install-ClaudeNative 'DOWNLOAD'
+ConvertTo-Json -InputObject @($script:calls) -Compress
+""".replace('DOWNLOAD', directory))
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout.strip().splitlines()[-1])
-        self.assertEqual(data, ['https://claude.ai/install.ps1', 'Install Claude Code'])
+        self.assertEqual(data, ['https://downloads.claude.ai/claude-code-releases/bootstrap.ps1',
+                                'Install Claude Code'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_claude_fallback_rejects_an_html_page_and_uses_the_short_link(self):
+        directory = str(self.root).replace("'", "''")
+        result = self.run_powershell("""
+$script:calls = @()
+function Save-Download {
+    param($Url, $Destination)
+    $script:calls += $Url
+    if ($Url -match 'downloads\.claude\.ai') {
+        '<!DOCTYPE html><html>blocked</html>' | Set-Content -LiteralPath $Destination -Encoding ASCII
+    } else {
+        'param() # fixture claude installer' | Set-Content -LiteralPath $Destination -Encoding ASCII
+    }
+}
+function Invoke-Checked { param($Executable, $Arguments, $Label) $script:calls += $Label }
+Install-ClaudeNative 'DOWNLOAD'
+ConvertTo-Json -InputObject @($script:calls) -Compress
+""".replace('DOWNLOAD', directory))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data, ['https://downloads.claude.ai/claude-code-releases/bootstrap.ps1',
+                                'https://claude.ai/install.ps1', 'Install Claude Code'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_claude_fallback_reports_two_html_answers(self):
+        directory = str(self.root).replace("'", "''")
+        result = self.run_powershell("""
+function Save-Download {
+    param($Url, $Destination)
+    '<!DOCTYPE html><html>blocked</html>' | Set-Content -LiteralPath $Destination -Encoding ASCII
+}
+function Invoke-Checked { throw 'UNEXPECTED INSTALL' }
+try { Install-ClaudeNative 'DOWNLOAD' } catch { $_.Exception.Message }
+""".replace('DOWNLOAD', directory))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Could not download the Claude Code installer', result.stdout)
+        self.assertIn('web page instead of a PowerShell script', result.stdout)
+        self.assertNotIn('UNEXPECTED INSTALL', result.stdout)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows WinGet bootstrap')
+    def test_win_get_bootstrap_failure_is_not_retried_for_each_component(self):
+        result = self.run_powershell("""
+$script:attempts = 0
+function Find-WinGet { $null }
+function Register-WinGet {}
+function Refresh-ProcessPath {}
+function Install-WinGetClient { $script:attempts++; throw 'fixture bootstrap failed' }
+function Install-DirectPackage { param($PackageId, $DisplayName) }
+Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
+Install-WinGetPackage 'Python.Python.3.14' 'Python'
+$script:attempts
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip().splitlines()[-1], '1')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows WinGet version detection')
     def test_old_or_broken_winget_is_not_accepted(self):

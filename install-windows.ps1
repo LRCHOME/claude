@@ -3,6 +3,8 @@ param([switch]$CheckOnly, [switch]$RepairWinGetAllUsers, [string]$WinGetRepairRe
 $ErrorActionPreference = 'Stop'
 $binDirectory = Join-Path $PSScriptRoot 'bin'
 $installerScript = $PSCommandPath
+# Remembered after the first failed bootstrap so later components do not retry it.
+$script:winGetBootstrapFailure = $null
 
 function Require-Command([string]$Name, [string]$HelpText) {
     $command = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -312,10 +314,31 @@ function Invoke-ElevatedInstaller([string]$FilePath, [string]$Arguments, [string
 }
 
 function Install-ClaudeNative([string]$Directory) {
-    $script = Join-Path $Directory 'install-claude.ps1'
-    Save-Download 'https://claude.ai/install.ps1' $script
+    $destination = Join-Path $Directory 'install-claude.ps1'
+    $errors = @()
+    $downloaded = $false
+    # The short link redirects to the bootstrap script; some networks answer the
+    # redirect with an HTML page, so try the canonical URL first and check both.
+    foreach ($url in @('https://downloads.claude.ai/claude-code-releases/bootstrap.ps1',
+                       'https://claude.ai/install.ps1')) {
+        try {
+            Save-Download $url $destination
+            $content = Get-Content -LiteralPath $destination -Raw -ErrorAction Stop
+            if (-not $content -or $content -match '<!DOCTYPE|<html|application/ld\+json') {
+                throw 'the server returned a web page instead of a PowerShell script'
+            }
+            if ($content -notmatch 'claude') {
+                throw 'the downloaded file is not the Claude Code installer'
+            }
+            $downloaded = $true
+            break
+        } catch { $errors += ($url + ': ' + $_.Exception.Message) }
+    }
+    if (-not $downloaded) {
+        throw ('Could not download the Claude Code installer. ' + ($errors -join '; '))
+    }
     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    Invoke-Checked $powershell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script) 'Install Claude Code'
+    Invoke-Checked $powershell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $destination) 'Install Claude Code'
 }
 
 function Install-DirectPackage([string]$PackageId, [string]$DisplayName) {
@@ -357,15 +380,21 @@ function Install-DirectPackage([string]$PackageId, [string]$DisplayName) {
 
 function Install-WinGetPackage([string]$PackageId, [string]$DisplayName, [switch]$UserScope, [switch]$MachineScope) {
     if ($UserScope -and $MachineScope) { throw 'Choose either user or machine installation scope.' }
-    try {
-        $winget = Ensure-WinGet
-    } catch {
-        $bootstrapFailure = $_.Exception.Message
-        Write-Host ('WinGet is unavailable: ' + $bootstrapFailure)
+    if ($script:winGetBootstrapFailure) {
+        Write-Host ('WinGet is unavailable: ' + $script:winGetBootstrapFailure)
+    } else {
+        try {
+            $winget = Ensure-WinGet
+        } catch {
+            $script:winGetBootstrapFailure = $_.Exception.Message
+            Write-Host ('WinGet is unavailable: ' + $script:winGetBootstrapFailure)
+        }
+    }
+    if ($script:winGetBootstrapFailure) {
         Write-Host ('Falling back to the official ' + $DisplayName + ' installer.')
         try { Install-DirectPackage $PackageId $DisplayName }
         catch {
-            throw ('WinGet is unavailable (' + $bootstrapFailure + ') and the direct installation of ' +
+            throw ('WinGet is unavailable (' + $script:winGetBootstrapFailure + ') and the direct installation of ' +
                    $DisplayName + ' failed: ' + $_.Exception.Message)
         }
         Refresh-ProcessPath
