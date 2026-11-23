@@ -250,9 +250,127 @@ function Ensure-WinGet([switch]$CheckOnly) {
     throw 'WinGet repair finished but no working WinGet >=1.8 was found for this user. Restart Windows if requested and retry. Administrator-only repair: powershell -NoProfile -File .\install-windows.ps1 -RepairWinGetAllUsers'
 }
 
+function New-DownloadDirectory {
+    $directory = Join-Path ([IO.Path]::GetTempPath()) ('claude-launchers-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    return $directory
+}
+
+function Save-Download([string]$Url, [string]$Destination) {
+    Write-Host ('Downloading ' + $Url)
+    $previousProtocol = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = $previousProtocol -bor [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -TimeoutSec 900
+    } finally { [Net.ServicePointManager]::SecurityProtocol = $previousProtocol }
+    Unblock-File -LiteralPath $Destination -ErrorAction SilentlyContinue
+}
+
+function Assert-SignedInstaller([string]$Path) {
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    if (-not $signature -or $signature.Status -ne 'Valid') {
+        $status = if ($signature) { [string]$signature.Status } else { 'unknown' }
+        throw ('Downloaded installer signature is not valid (' + $status + '): ' + $Path + '. Installation stopped.')
+    }
+}
+
+function Get-LatestNodeRelease {
+    $releases = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json'
+    $entry = $releases | Where-Object {
+        $_.lts -and ([version](([string]$_.version).TrimStart('v')) -ge [version]'20.18.1')
+    } | Select-Object -First 1
+    if (-not $entry) { throw 'Could not find a Node.js LTS release >= 20.18.1 on nodejs.org.' }
+    return @{ Url = 'https://nodejs.org/dist/' + $entry.version + '/node-' + $entry.version + '-x64.msi'
+              Version = $entry.version }
+}
+
+function Get-LatestPythonRelease {
+    $index = Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/' -UseBasicParsing -TimeoutSec 60
+    $versions = @([regex]::Matches($index.Content, '3\.14\.\d+') | ForEach-Object { $_.Value } | Select-Object -Unique)
+    $version = $versions | Sort-Object { [version]$_ } -Descending | Select-Object -First 1
+    if (-not $version) { throw 'Could not find a Python 3.14 installer on python.org.' }
+    return @{ Url = 'https://www.python.org/ftp/python/' + $version + '/python-' + $version + '-amd64.exe'
+              Version = $version }
+}
+
+function Get-LatestGitRelease {
+    $release = Invoke-RestMethod -Headers @{ 'User-Agent' = 'claude-provider-launchers' } `
+        -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'
+    $asset = @($release.assets) | Where-Object { $_.name -match '^Git-.*-64-bit\.exe$' } | Select-Object -First 1
+    if (-not $asset) { throw 'Could not find the 64-bit Git for Windows installer in the latest release.' }
+    return @{ Url = $asset.browser_download_url; Version = $release.tag_name }
+}
+
+function Invoke-ElevatedInstaller([string]$FilePath, [string]$Arguments, [string]$Label) {
+    Write-Host ('Installing ' + $Label + '. Approve the Windows administrator prompt if it appears...')
+    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Verb RunAs -Wait -PassThru
+    $exitCode = if ($process -and $null -ne $process.ExitCode) { $process.ExitCode } else { 0 }
+    if ($exitCode -notin @(0, 3010, 1641)) {
+        throw ($Label + ' installer failed (exit ' + $exitCode + ').')
+    }
+    if ($exitCode -eq 3010) { Write-Host ('A reboot is required to finish installing ' + $Label + '.') }
+}
+
+function Install-ClaudeNative([string]$Directory) {
+    $script = Join-Path $Directory 'install-claude.ps1'
+    Save-Download 'https://claude.ai/install.ps1' $script
+    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Invoke-Checked $powershell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script) 'Install Claude Code'
+}
+
+function Install-DirectPackage([string]$PackageId, [string]$DisplayName) {
+    # Fallback for machines without a usable WinGet: download official installers,
+    # verify their Authenticode signature and run them silently.
+    $directory = New-DownloadDirectory
+    try {
+        switch ($PackageId) {
+            'OpenJS.NodeJS.LTS' {
+                $release = Get-LatestNodeRelease
+                $file = Join-Path $directory 'node.msi'
+                Save-Download $release.Url $file
+                Assert-SignedInstaller $file
+                Invoke-ElevatedInstaller 'msiexec.exe' ('/i "' + $file + '" /qn /norestart') 'Node.js'
+            }
+            'Python.Python.3.14' {
+                $release = Get-LatestPythonRelease
+                $file = Join-Path $directory 'python.exe'
+                Save-Download $release.Url $file
+                Assert-SignedInstaller $file
+                Invoke-ElevatedInstaller $file '/quiet InstallAllUsers=1 PrependPath=1 Include_test=0' 'Python (all users)'
+            }
+            'Git.Git' {
+                $release = Get-LatestGitRelease
+                $file = Join-Path $directory 'git-setup.exe'
+                Save-Download $release.Url $file
+                Assert-SignedInstaller $file
+                Invoke-ElevatedInstaller $file '/VERYSILENT /NORESTART /NOCANCEL /SUPPRESSMSGBOXES' 'Git for Windows'
+            }
+            'Anthropic.ClaudeCode' {
+                Install-ClaudeNative $directory
+            }
+            default { throw ('No direct installer is known for ' + $PackageId + '.') }
+        }
+    } finally {
+        Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-WinGetPackage([string]$PackageId, [string]$DisplayName, [switch]$UserScope, [switch]$MachineScope) {
     if ($UserScope -and $MachineScope) { throw 'Choose either user or machine installation scope.' }
-    $winget = Ensure-WinGet
+    try {
+        $winget = Ensure-WinGet
+    } catch {
+        $bootstrapFailure = $_.Exception.Message
+        Write-Host ('WinGet is unavailable: ' + $bootstrapFailure)
+        Write-Host ('Falling back to the official ' + $DisplayName + ' installer.')
+        try { Install-DirectPackage $PackageId $DisplayName }
+        catch {
+            throw ('WinGet is unavailable (' + $bootstrapFailure + ') and the direct installation of ' +
+                   $DisplayName + ' failed: ' + $_.Exception.Message)
+        }
+        Refresh-ProcessPath
+        return
+    }
     Write-Host ('Installing ' + $DisplayName + ' using WinGet...')
     $arguments = @('install', '--id', $PackageId, '--exact', '--source', 'winget', '--silent',
                    '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')

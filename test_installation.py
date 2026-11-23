@@ -53,8 +53,11 @@ syncBuiltinESMExports();
         script = self.root / 'test-bootstrap.ps1'
         installer = str(ROOT / 'install-windows.ps1').replace("'", "''")
         script.write_text(". '" + installer + "'\n" + body, encoding='utf-8-sig')
+        # PowerShell localizes its error formatting with the OEM code page, so a
+        # non-English Windows can return bytes that are not UTF-8. Replacing them
+        # keeps the ASCII parts of the message assertable instead of crashing.
         result = subprocess.run([str(powershell), '-NoProfile', '-File', str(script)],
-                                text=True, encoding='utf-8', capture_output=True, timeout=20)
+                                text=True, encoding='utf-8', errors='replace', capture_output=True, timeout=20)
         if 'running scripts is disabled' in ' '.join(result.stderr.split()) or 'PSSecurityException' in result.stderr:
             self.skipTest('Local execution policy disallows PowerShell test scripts')
         return result
@@ -186,18 +189,125 @@ $script:steps | ConvertTo-Json -Compress
         self.assertEqual(data, ['register', 'bootstrap', 'package:new-winget.exe:OpenJS.NodeJS.LTS'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows WinGet bootstrap')
-    def test_failed_winget_bootstrap_cannot_continue_to_package_installation(self):
+    def test_failed_winget_bootstrap_falls_back_to_a_direct_installer(self):
+        result = self.run_powershell("""
+$script:steps = @()
+function Find-WinGet { return $null }
+function Register-WinGet {}
+function Refresh-ProcessPath { $script:steps += 'path' }
+function Install-WinGetClient { throw 'fixture bootstrap failed' }
+function Install-DirectPackage {
+    param($PackageId, $DisplayName)
+    $script:steps += ('direct:' + $PackageId + ':' + $DisplayName)
+}
+Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
+$script:steps | ConvertTo-Json -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        # Ensure-WinGet refreshes PATH after each failed bootstrap attempt too.
+        self.assertIn('direct:OpenJS.NodeJS.LTS:Node.js', data)
+        self.assertEqual(data[-1], 'path')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_direct_installer_failure_reports_both_causes(self):
         result = self.run_powershell("""
 function Find-WinGet { return $null }
 function Register-WinGet {}
 function Refresh-ProcessPath {}
 function Install-WinGetClient { throw 'fixture bootstrap failed' }
+function Install-DirectPackage { throw 'fixture download failed' }
 function Invoke-Checked { throw 'UNEXPECTED PACKAGE INSTALL' }
-Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
+try { Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js' } catch { $_.Exception.Message }
 """)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('fixture bootstrap failed', result.stderr)
-        self.assertNotIn('UNEXPECTED PACKAGE INSTALL', result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('fixture bootstrap failed', result.stdout)
+        self.assertIn('fixture download failed', result.stdout)
+        self.assertNotIn('UNEXPECTED', result.stdout)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_latest_node_release_prefers_lts_at_least_20_18_1(self):
+        result = self.run_powershell("""
+function Invoke-RestMethod {
+    param($Uri, [switch]$UseBasicParsing, $Headers)
+    @(@{version='v20.18.0'; lts='Iron'}, @{version='v24.1.0'; lts='Jod'}, @{version='v25.0.0'; lts=$false})
+}
+(Get-LatestNodeRelease).Url
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'https://nodejs.org/dist/v24.1.0/node-v24.1.0-x64.msi')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_latest_python_release_is_the_highest_314_build(self):
+        result = self.run_powershell("""
+function Invoke-WebRequest {
+    param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec)
+    @{Content='3.14.0 3.14.10 3.13.9'}
+}
+(Get-LatestPythonRelease).Url
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         'https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_latest_git_release_uses_the_signed_64_bit_installer(self):
+        result = self.run_powershell("""
+function Invoke-RestMethod {
+    param($Uri, [switch]$UseBasicParsing, $Headers)
+    @{tag_name='v2.51.0'; assets=@(
+        @{name='PortableGit-2.51.0-64-bit.7z.exe'; browser_download_url='https://example.invalid/portable'},
+        @{name='Git-2.51.0-64-bit.exe'; browser_download_url='https://example.invalid/git'},
+        @{name='Git-2.51.0-64-bit.exe.sig'; browser_download_url='https://example.invalid/sig'})}
+}
+(Get-LatestGitRelease).Url
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'https://example.invalid/git')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_direct_installer_stops_when_the_signature_is_not_valid(self):
+        result = self.run_powershell("""
+function Get-AuthenticodeSignature { param($FilePath) @{Status='NotSigned'} }
+try { Assert-SignedInstaller 'fixture.exe'; 'UNEXPECTED SUCCESS' } catch { $_.Exception.Message }
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('signature is not valid', result.stdout)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_python_fallback_installs_all_users_silently(self):
+        directory = str(self.root / 'downloads').replace("'", "''")
+        result = self.run_powershell("""
+function New-DownloadDirectory { 'DOWNLOAD' }
+function Get-LatestPythonRelease { @{Url='https://example.invalid/python.exe'} }
+function Save-Download { param($Url, $Destination) }
+function Assert-SignedInstaller { param($Path) }
+function Start-Process {
+    param($FilePath, $ArgumentList, $Verb, [switch]$Wait, [switch]$PassThru)
+    $script:captured = @{file=$FilePath; args=$ArgumentList; verb=$Verb}
+    @{ExitCode=0}
+}
+Install-DirectPackage 'Python.Python.3.14' 'Python (all users)'
+$script:captured | ConvertTo-Json -Compress
+""".replace('DOWNLOAD', directory))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['verb'], 'RunAs')
+        self.assertIn('InstallAllUsers=1', data['args'])
+        self.assertTrue(data['file'].endswith('python.exe'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows direct installers')
+    def test_claude_fallback_uses_the_official_install_script(self):
+        result = self.run_powershell("""
+$script:calls = @()
+function Save-Download { param($Url, $Destination) $script:calls += $Url }
+function Invoke-Checked { param($Executable, $Arguments, $Label) $script:calls += $Label }
+Install-ClaudeNative 'FIXTUREDIR'
+$script:calls | ConvertTo-Json -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data, ['https://claude.ai/install.ps1', 'Install Claude Code'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows WinGet version detection')
     def test_old_or_broken_winget_is_not_accepted(self):
@@ -285,21 +395,26 @@ Ensure-WinGet
         self.assertEqual(result.stdout.strip(), 'usable-winget.exe')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows WinGet repair fallback')
-    def test_failed_administrator_retry_preserves_both_errors_and_stops_packages(self):
+    def test_failed_administrator_retry_falls_back_to_direct_install(self):
         result = self.run_powershell("""
+$script:steps = @()
 function Find-WinGet {}
 function Test-InstallerAdministrator { $false }
 function Register-WinGet {}
 function Refresh-ProcessPath {}
 function Install-WinGetClient { throw 'initial repair requires -AllUsers' }
 function Invoke-ElevatedWinGetRepair { throw 'fixture UAC cancelled or repair failed' }
+function Install-DirectPackage { param($PackageId, $DisplayName) $script:steps += ('direct:' + $PackageId) }
 function Invoke-Checked { throw 'UNEXPECTED PACKAGE INSTALL' }
 Install-WinGetPackage 'OpenJS.NodeJS.LTS' 'Node.js'
+ConvertTo-Json -InputObject @($script:steps) -Compress
 """)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('initial repair requires -AllUsers', result.stderr)
-        self.assertIn('fixture UAC cancelled or repair failed', result.stderr)
-        self.assertNotIn('UNEXPECTED', result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('initial repair requires -AllUsers', result.stdout)
+        self.assertIn('fixture UAC cancelled or repair failed', result.stdout)
+        self.assertNotIn('UNEXPECTED', result.stdout)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(data, ['direct:OpenJS.NodeJS.LTS'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows WinGet elevation arguments')
     def test_elevated_worker_quotes_paths_and_only_repairs_winget(self):
