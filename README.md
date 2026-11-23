@@ -25,11 +25,14 @@
 - Python **3.10 или новее** для `ds_claude`, `or_claude`, `ai_claude` и установщика macOS/Linux.
 - Git для клонирования репозитория.
 
-На Windows 10/11 зависимости ниже может поставить `install-windows.ps1`.
-Нужен доступ в интернет. Если WinGet отсутствует или не работает, установщик
-зарегистрирует App Installer для текущего пользователя, а при необходимости
-установит стабильный WinGet через официальный модуль `Microsoft.WinGet.Client`
-из PowerShell Gallery. Используется [рекомендованный Microsoft способ](https://learn.microsoft.com/en-us/windows/package-manager/winget/troubleshooting).
+На Windows 10/11 зависимости ниже может поставить `install-windows.ps1`,
+на Linux — `install-linux.sh`. Нужен доступ в интернет. Если WinGet отсутствует
+или не работает, установщик зарегистрирует App Installer для текущего пользователя,
+а при необходимости установит стабильный WinGet через официальный модуль
+`Microsoft.WinGet.Client` из PowerShell Gallery. Используется
+[рекомендованный Microsoft способ](https://learn.microsoft.com/en-us/windows/package-manager/winget/troubleshooting).
+Когда WinGet недоступен, недостающие компоненты ставятся официальными установщиками
+напрямую. На Linux установщик работает без root и сам ставит Node.js и Claude Code.
 Если Git ещё не установлен, скачайте репозиторий через **Code → Download ZIP**,
 распакуйте его и запустите установщик из полученной папки.
 
@@ -176,6 +179,21 @@ if ($pythonLog) { Get-Content -LiteralPath $pythonLog.FullName -Tail 80 }
 настраиваются отдельно после установки.
 
 ## Установка команд на macOS / Linux
+
+### Linux
+
+Полный установщик работает без root: проверяет Python 3.10+, при необходимости
+скачивает официальный Node.js LTS (сверяя SHA256), ставит Claude Code официальным
+скриптом, выполняет `npm ci` и создаёт все четыре обёртки.
+
+```sh
+bash install-linux.sh
+bash install-linux.sh --check-only   # только проверка, ничего не менять
+```
+
+Подробная инструкция: [INSTALL-LINUX.md](INSTALL-LINUX.md).
+
+### macOS
 
 ```sh
 python3 install-unix.py

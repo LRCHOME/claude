@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -246,6 +248,14 @@ class LaunchTests(unittest.TestCase):
         command = (target / 'ds_claude').read_text(encoding='utf-8').splitlines()[1]
         self.assertEqual(shlex.split(command)[:4], ['exec', 'python3', str(source.resolve() / 'launch.py'), 'ds'])
         self.assertTrue(command.endswith('"$@"'))
+
+    def test_linux_installer_has_valid_shell_syntax(self):
+        bash = shutil.which('bash')
+        if not bash:
+            self.skipTest('bash is not available')
+        result = subprocess.run([bash, '-n', str(Path(__file__).with_name('install-linux.sh'))],
+                                text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':
