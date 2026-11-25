@@ -207,6 +207,23 @@ gpt_claude --version
 именами. Если переместили репозиторий, запустите установщик заново.
 Подробная инструкция: [INSTALL-MAC.md](INSTALL-MAC.md).
 
+## Claude Desktop через DeepSeek (неофициально)
+
+Приложение Claude Desktop умеет работать через сторонний шлюз в режиме
+**Third-Party Inference**. Для DeepSeek в комплекте есть локальный шлюз
+`desktop_gateway.py`: он отдаёт приложению Claude-модели, подменяет их на
+`deepseek-v4-pro` / `deepseek-flash` и проксирует запросы в DeepSeek,
+сохраняя стриминг и tool calls.
+
+```powershell
+claude_gateway            # Windows, из bin/
+python3 desktop_gateway.py  # Linux/macOS
+```
+
+Anthropic не поддерживает маршрутизацию на не-Claude модели, поэтому это
+экспериментальный сценарий. Настройка окна Third-Party Inference, флаги шлюза,
+диагностика и ограничения: [INSTALL-DESKTOP-3P.md](INSTALL-DESKTOP-3P.md).
+
 ## Настройка gpt_claude
 
 Вставлять API-ключ OpenAI не требуется. Войдите **в свой аккаунт** через браузер:
